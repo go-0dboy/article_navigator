@@ -10,12 +10,14 @@ Acceptance criteria:
 - two concurrent runs cannot own the same Source lease;
 - the loser reports `ALREADY_CLAIMED` and does not perform the network request;
 - an abandoned expired lease is reclaimable;
+- a stale owner cannot release a replacement owner's lease;
 - the atomic claim re-checks the due schedule so a stale in-memory due snapshot cannot re-collect a Source already scheduled into the future;
 - expired/replaced/settings-stale owners cannot commit.
 
 Automated evidence:
 - `CollectionHardeningIntegrationTest.concurrentCollectionRunsClaimOnceReportAlreadyClaimedAndFetchOnce`
 - `CollectionHardeningIntegrationTest.expiredLeaseCanBeClaimedByNextRunWithoutRelease`
+- `CollectionLeaseReleaseIntegrationTest.staleOwnerReleaseCannotClearReplacementLease`
 - `CollectionHardeningIntegrationTest.staleRunCannotOverwriteNewerCommittedState`
 - `CollectionHardeningIntegrationTest.expiredLeaseCannotCommitEvenIfNoReplacementClaimedIt`
 - `CollectionLeaseDueGuardIntegrationTest.staleDueSnapshotCannotClaimAfterNewerRunSchedulesSourceInFuture`
