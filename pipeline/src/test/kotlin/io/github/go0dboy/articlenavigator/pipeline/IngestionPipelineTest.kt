@@ -197,7 +197,16 @@ private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionReposi
     override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? =
         items.values.firstOrNull { it.sourceId == sourceId && it.url == url }
     override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> = items.values
-        .filter { it.status == DiscoveryStatus.DISCOVERED || (it.status == DiscoveryStatus.FAILED && (it.nextProcessingAt == null || it.nextProcessingAt <= now)) }
+        .filter { item ->
+            if (item.status == DiscoveryStatus.DISCOVERED) {
+                true
+            } else if (item.status == DiscoveryStatus.FAILED) {
+                val retryAt = item.nextProcessingAt
+                retryAt == null || !retryAt.isAfter(now)
+            } else {
+                false
+            }
+        }
         .take(limit)
     override suspend fun storeRawContent(content: RawContent) { raw[content.discoveredItemId] = content }
     override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = raw[id]
