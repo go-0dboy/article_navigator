@@ -8,7 +8,6 @@ import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
-import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
 import io.github.go0dboy.articlenavigator.core.model.Document
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
@@ -42,8 +41,8 @@ class RoomIngestionRepository(private val dao: IngestionDao) : IngestionReposito
     override suspend fun upsertDiscovered(item: DiscoveredItem) = dao.upsertDiscovered(item.toEntity())
     override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = dao.findDiscoveredById(id.value)?.toDomain()
     override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? = dao.findDiscovered(sourceId.value, url)?.toDomain()
-    override suspend fun findDiscoveredByStatus(status: DiscoveryStatus, limit: Int): List<DiscoveredItem> =
-        dao.findDiscoveredByStatus(status.name, limit).map { it.toDomain() }
+    override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> =
+        dao.findReadyForProcessing(now.toEpochMilli(), limit).map { it.toDomain() }
     override suspend fun storeRawContent(content: RawContent) = dao.upsertRawContent(content.toEntity())
     override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = dao.findRawContent(id.value)?.toDomain()
     override suspend fun deleteRawContent(id: DiscoveredItemId) = dao.deleteRawContent(id.value)
