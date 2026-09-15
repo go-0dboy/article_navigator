@@ -3,7 +3,6 @@ package io.github.go0dboy.articlenavigator.core.data
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
-import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
 import io.github.go0dboy.articlenavigator.core.model.Document
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
@@ -37,7 +36,7 @@ interface IngestionRepository {
     suspend fun upsertDiscovered(item: DiscoveredItem)
     suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem?
     suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem?
-    suspend fun findDiscoveredByStatus(status: DiscoveryStatus, limit: Int): List<DiscoveredItem>
+    suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem>
     suspend fun storeRawContent(content: RawContent)
     suspend fun loadRawContent(id: DiscoveredItemId): RawContent?
     suspend fun deleteRawContent(id: DiscoveredItemId)
