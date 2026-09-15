@@ -50,7 +50,12 @@ data class SourceCollectionStateEntity(
 @Entity(
     tableName = "discovered_items",
     foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
-    indices = [Index("sourceId"), Index(value = ["sourceId", "url"], unique = true), Index("status")],
+    indices = [
+        Index("sourceId"),
+        Index(value = ["sourceId", "url"], unique = true),
+        Index("status"),
+        Index("nextProcessingAtEpochMillis"),
+    ],
 )
 data class DiscoveredItemEntity(
     @PrimaryKey val id: String,
@@ -63,6 +68,9 @@ data class DiscoveredItemEntity(
     val contentHash: String?,
     val status: String,
     val relevanceScore: Double?,
+    val processingAttempts: Int,
+    val nextProcessingAtEpochMillis: Long?,
+    val lastProcessingError: String?,
 )
 
 @Entity(
