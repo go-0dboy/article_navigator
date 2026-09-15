@@ -39,7 +39,9 @@ class OkHttpTransportTest {
                 ),
             )
 
-            val request = server.takeRequest()
+            val request = checkNotNull(server.takeRequest(2, TimeUnit.SECONDS)) {
+                "Expected request did not reach MockWebServer within 2 seconds"
+            }
             assertEquals("\"feed-v1\"", request.headers["If-None-Match"])
             assertEquals(200, response.statusCode)
             assertEquals("\"feed-v2\"", response.header("etag"))
@@ -137,7 +139,9 @@ class OkHttpTransportTest {
                         transport.execute(HttpRequest(server.url("/slow").toString(), maxResponseBytes = 512 * 1024))
                     }
 
-                    server.takeRequest()
+                    checkNotNull(server.takeRequest(2, TimeUnit.SECONDS)) {
+                        "Slow request did not reach MockWebServer within 2 seconds"
+                    }
                     withTimeout(2_000) { bodyStarted.await() }
                     request.cancel()
 
