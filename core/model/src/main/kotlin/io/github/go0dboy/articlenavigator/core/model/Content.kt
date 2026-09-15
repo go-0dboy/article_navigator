@@ -63,6 +63,7 @@ data class InboxItem(
     val updatedAt: Instant,
 )
 
+/** Provenance snapshot captured when a discovery is attached to Inbox. */
 data class InboxOrigin(
     val inboxItemId: InboxItemId,
     val discoveredItemId: DiscoveredItemId,
@@ -72,6 +73,9 @@ data class InboxOrigin(
     val canonicalUrl: String,
     val discoveredAt: Instant,
     val fetchedAt: Instant,
+    val sourceNameSnapshot: String,
+    val sourceUrlSnapshot: String,
+    val sourceTypeSnapshot: String,
 )
 
 data class Document(
