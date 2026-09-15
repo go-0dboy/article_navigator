@@ -1,10 +1,9 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
 import androidx.room3.migration.Migration
-import androidx.sqlite.async.executeSQL
 
 val MIGRATION_1_2 = Migration(1, 2) { connection ->
-    connection.executeSQL(
+    connection.prepare(
         """
         CREATE TABLE IF NOT EXISTS `source_collection_states` (
             `sourceId` TEXT NOT NULL,
@@ -17,5 +16,7 @@ val MIGRATION_1_2 = Migration(1, 2) { connection ->
             FOREIGN KEY(`sourceId`) REFERENCES `sources`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
         )
         """.trimIndent(),
-    )
+    ).use { statement ->
+        statement.step()
+    }
 }
