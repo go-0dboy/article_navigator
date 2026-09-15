@@ -68,6 +68,7 @@ class IngestionPipelineTest {
 
         assertEquals(1, report.addedToInbox)
         assertEquals(0, report.failed)
+        assertEquals(0, report.skipped)
         assertEquals(1, inbox.items.size)
         assertEquals("Article title", inbox.items.values.single().title)
         assertTrue(inbox.items.values.single().normalizedText.contains("Useful body text."))
@@ -103,7 +104,7 @@ class IngestionPipelineTest {
     }
 
     @Test
-    fun `fetch failure persists retry backoff`() = runTest {
+    fun `network failure persists retry backoff`() = runTest {
         val discovered = discovered("https://example.test/failure")
         val ingestion = FakeIngestionRepository(discovered)
         val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
@@ -114,10 +115,63 @@ class IngestionPipelineTest {
         val failed = ingestion.items.getValue(discovered.id)
 
         assertEquals(1, report.failed)
+        assertEquals(0, report.skipped)
         assertEquals(DiscoveryStatus.FAILED, failed.status)
         assertEquals(1, failed.processingAttempts)
         assertEquals(now.plus(Duration.ofMinutes(15)), failed.nextProcessingAt)
         assertTrue(failed.lastProcessingError!!.contains("network down"))
+    }
+
+    @Test
+    fun `server failure remains retryable`() = runTest {
+        val discovered = discovered("https://example.test/server-failure")
+        val ingestion = FakeIngestionRepository(discovered)
+        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
+            FetchResult(it, 503, "text/plain", "unavailable".toByteArray())
+        }
+
+        val report = pipeline.processReady()
+        val failed = ingestion.items.getValue(discovered.id)
+
+        assertEquals(1, report.failed)
+        assertEquals(DiscoveryStatus.FAILED, failed.status)
+        assertEquals(now.plus(Duration.ofMinutes(15)), failed.nextProcessingAt)
+    }
+
+    @Test
+    fun `permanent client response is skipped without retry`() = runTest {
+        val discovered = discovered("https://example.test/missing")
+        val ingestion = FakeIngestionRepository(discovered)
+        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
+            FetchResult(it, 404, "text/plain", "missing".toByteArray())
+        }
+
+        val report = pipeline.processReady()
+        val skipped = ingestion.items.getValue(discovered.id)
+
+        assertEquals(1, report.skipped)
+        assertEquals(0, report.failed)
+        assertEquals(DiscoveryStatus.SKIPPED, skipped.status)
+        assertEquals(null, skipped.nextProcessingAt)
+        assertTrue(skipped.lastProcessingError!!.contains("404"))
+        assertTrue(ingestion.findReadyForProcessing(now.plus(Duration.ofDays(7)), 10).isEmpty())
+    }
+
+    @Test
+    fun `unsupported content is skipped and temporary payload is removed`() = runTest {
+        val discovered = discovered("https://example.test/image")
+        val ingestion = FakeIngestionRepository(discovered)
+        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
+            FetchResult(it, 200, "image/png", byteArrayOf(1, 2, 3))
+        }
+
+        val report = pipeline.processReady()
+        val skipped = ingestion.items.getValue(discovered.id)
+
+        assertEquals(1, report.skipped)
+        assertEquals(DiscoveryStatus.SKIPPED, skipped.status)
+        assertEquals(null, ingestion.raw[discovered.id])
+        assertTrue(skipped.lastProcessingError!!.contains("Unsupported content type"))
     }
 
     @Test
