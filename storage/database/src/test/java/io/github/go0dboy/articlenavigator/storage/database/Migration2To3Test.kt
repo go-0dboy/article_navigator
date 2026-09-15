@@ -5,12 +5,13 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import java.nio.file.Files
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class Migration2To3Test {
     @Test
-    fun migrationAddsInboxRetryStatePreservesProvenanceAndSuppressesOnlyLegacySampleRows() = runTest {
+    fun migrationAddsInboxRetryStatePreservesUserDataAndRemovesLegacySample() = runTest {
         val file = Files.createTempFile("article-navigator-migration-2-3", ".db")
         Files.deleteIfExists(file)
         val connection = BundledSQLiteDriver().open(file.toString())
@@ -48,17 +49,11 @@ class Migration2To3Test {
                 assertTrue(statement.isNull(3))
             }
 
-            connection.prepare(
-                "SELECT status, processingAttempts FROM discovered_items WHERE id = 'legacy-device-item'",
-            ).use { statement ->
-                assertTrue(statement.step())
-                assertEquals("PROCESSED", statement.getText(0))
-                assertEquals(0L, statement.getLong(1))
+            connection.prepare("SELECT 1 FROM discovered_items WHERE id = 'legacy-device-item'").use { statement ->
+                assertFalse(statement.step())
             }
-
-            connection.prepare("SELECT enabled FROM sources WHERE id = 'phase3-sample-rss'").use { statement ->
-                assertTrue(statement.step())
-                assertEquals(0L, statement.getLong(0))
+            connection.prepare("SELECT 1 FROM sources WHERE id = 'phase3-sample-rss'").use { statement ->
+                assertFalse(statement.step())
             }
             connection.prepare("SELECT enabled FROM sources WHERE id = 'source-1'").use { statement ->
                 assertTrue(statement.step())
