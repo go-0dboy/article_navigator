@@ -33,6 +33,7 @@ data class IngestionReport(
     val mergedIntoInbox: Int,
     val alreadyKnown: Int,
     val failed: Int,
+    val skipped: Int,
 )
 
 class IngestionPipeline(
@@ -54,6 +55,7 @@ class IngestionPipeline(
         var merged = 0
         var known = 0
         var failed = 0
+        var skipped = 0
 
         for (item in ready) {
             when (processOne(item, now)) {
@@ -61,15 +63,16 @@ class IngestionPipeline(
                 Outcome.MERGED -> merged++
                 Outcome.KNOWN -> known++
                 Outcome.FAILED -> failed++
+                Outcome.SKIPPED -> skipped++
             }
         }
-        return IngestionReport(ready.size, added, merged, known, failed)
+        return IngestionReport(ready.size, added, merged, known, failed, skipped)
     }
 
     private suspend fun processOne(item: DiscoveredItem, now: Instant): Outcome {
         val canonicalUrl = item.canonicalUrl
             ?: UrlCanonicalizer.canonicalize(item.url)
-            ?: return fail(item, now, IllegalArgumentException("Invalid article URL: ${item.url}"))
+            ?: return skip(item, "Invalid article URL: ${item.url}")
         val canonicalHash = sha256(canonicalUrl)
 
         val previousDisposition = knowledgeRepository.findSeen(canonicalHash, item.sourceId)
@@ -87,13 +90,21 @@ class IngestionPipeline(
         }
 
         val source = sourceRepository.findById(item.sourceId)
-            ?: return fail(item, now, IllegalStateException("Source ${item.sourceId.value} no longer exists"))
+            ?: return skip(item, "Source ${item.sourceId.value} no longer exists")
         val adapter = adapterResolver.resolve(source)
             ?: return fail(item, now, IllegalStateException("No adapter ${source.adapterType} for ${source.type}"))
 
         return try {
             val fetched = adapter.fetch(item)
-            require(fetched.statusCode in 200..299) { "Article request returned HTTP ${fetched.statusCode}" }
+            if (fetched.statusCode !in 200..299) {
+                val error = IllegalStateException("Article request returned HTTP ${fetched.statusCode}")
+                return if (isRetryableHttpStatus(fetched.statusCode)) {
+                    fail(item, now, error)
+                } else {
+                    skip(item, error.message ?: "HTTP ${fetched.statusCode}")
+                }
+            }
+
             val fetchedAt = clock.instant()
             ingestionRepository.storeRawContent(
                 RawContent(
@@ -106,7 +117,14 @@ class IngestionPipeline(
                 ),
             )
 
-            val extracted = extractor.extract(fetched.body, fetched.contentType, canonicalUrl)
+            val extracted = try {
+                extractor.extract(fetched.body, fetched.contentType, canonicalUrl)
+            } catch (error: UnsupportedContentTypeException) {
+                return skip(item, error.message ?: "Unsupported content type")
+            } catch (error: IllegalArgumentException) {
+                return skip(item, error.message ?: "Content cannot be extracted")
+            }
+
             val contentHash = sha256(extracted.normalizedText)
             val fetchedItem = item.copy(
                 canonicalUrl = canonicalUrl,
@@ -202,11 +220,29 @@ class IngestionPipeline(
                 status = DiscoveryStatus.FAILED,
                 processingAttempts = attempts,
                 nextProcessingAt = now.plus(delay),
-                lastProcessingError = (error.message ?: error::class.java.simpleName).take(500),
+                lastProcessingError = errorDescription(error),
             ),
         )
         return Outcome.FAILED
     }
+
+    private suspend fun skip(item: DiscoveredItem, reason: String): Outcome {
+        ingestionRepository.upsertDiscovered(
+            item.copy(
+                status = DiscoveryStatus.SKIPPED,
+                nextProcessingAt = null,
+                lastProcessingError = reason.take(500),
+            ),
+        )
+        ingestionRepository.deleteRawContent(item.id)
+        return Outcome.SKIPPED
+    }
+
+    private fun isRetryableHttpStatus(statusCode: Int): Boolean =
+        statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+
+    private fun errorDescription(error: Throwable): String =
+        (error.message ?: error::class.java.simpleName).take(500)
 
     private fun Duration.coerceAtMost(other: Duration): Duration = if (this > other) other else this
 
@@ -214,5 +250,5 @@ class IngestionPipeline(
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 
-    private enum class Outcome { ADDED, MERGED, KNOWN, FAILED }
+    private enum class Outcome { ADDED, MERGED, KNOWN, FAILED, SKIPPED }
 }
