@@ -3,7 +3,6 @@ package io.github.go0dboy.articlenavigator
 import android.content.Context
 import androidx.room3.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
-import io.github.go0dboy.articlenavigator.collector.api.SourceAdapterRegistry
 import io.github.go0dboy.articlenavigator.collector.rss.RssAtomSourceAdapter
 import io.github.go0dboy.articlenavigator.core.model.PollPolicy
 import io.github.go0dboy.articlenavigator.core.model.Source
@@ -15,6 +14,7 @@ import io.github.go0dboy.articlenavigator.scheduler.android.CollectionWorkerDepe
 import io.github.go0dboy.articlenavigator.scheduler.core.CollectionOrchestrator
 import io.github.go0dboy.articlenavigator.scheduler.core.CollectionRunContext
 import io.github.go0dboy.articlenavigator.scheduler.core.CollectionRunReport
+import io.github.go0dboy.articlenavigator.scheduler.core.SourceAdapterRegistry
 import io.github.go0dboy.articlenavigator.storage.database.ArticleNavigatorDatabase
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_1_2
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionStateRepository
