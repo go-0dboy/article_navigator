@@ -9,4 +9,5 @@ kotlin {
 dependencies {
     api(project(":core:model"))
     api(project(":collector:api"))
+    testImplementation(libs.junit)
 }
