@@ -15,6 +15,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import io.github.go0dboy.articlenavigator.scheduler.core.CollectionRunReport
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 
 fun interface CollectionWorkerDependencies {
@@ -44,6 +45,8 @@ class CollectionWorker(
                     KEY_SKIPPED to report.skipped,
                 ),
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Throwable) {
             if (runAttemptCount < MAX_INFRASTRUCTURE_RETRIES) {
                 Result.retry()
