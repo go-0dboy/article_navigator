@@ -54,12 +54,17 @@ class RoomCollectionRepository(private val dao: CollectionDao) : CollectionRepos
         now: Instant,
         leaseExpiresAt: Instant,
     ): SourceCollectionLease? {
-        if (dao.claim(sourceId.value, runToken, now.toEpochMilli(), leaseExpiresAt.toEpochMilli()) != 1) return null
-        val source = checkNotNull(dao.source(sourceId.value)) { "Claimed source disappeared: ${sourceId.value}" }.toDomain()
+        val snapshot = dao.tryClaim(
+            sourceId = sourceId.value,
+            runToken = runToken,
+            nowEpochMillis = now.toEpochMilli(),
+            leaseExpiresAtEpochMillis = leaseExpiresAt.toEpochMilli(),
+        ) ?: return null
+        val source = snapshot.source.toDomain()
         return SourceCollectionLease(
             source = source,
-            cursor = dao.cursor(sourceId.value)?.toDomain(),
-            previousState = dao.state(sourceId.value)?.toDomain(),
+            cursor = snapshot.cursor?.toDomain(),
+            previousState = snapshot.state?.toDomain(),
             runToken = runToken,
             settingsRevision = source.settingsRevision,
             expiresAt = leaseExpiresAt,
@@ -114,6 +119,7 @@ class RoomCollectionRepository(private val dao: CollectionDao) : CollectionRepos
                 lastErrorMessage = errorMessage?.take(2_000),
                 lastDiscoveredCount = previous?.lastDiscoveredCount ?: 0,
             ),
+            completedAtEpochMillis = completedAt.toEpochMilli(),
             nextCheckAtEpochMillis = nextCheckAt.toEpochMilli(),
         )
         return if (applied) CollectionCommitOutcome.APPLIED else CollectionCommitOutcome.STALE
@@ -130,6 +136,35 @@ class RoomIngestionRepository(private val dao: IngestionDao) : IngestionReposito
     override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? = dao.findDiscovered(sourceId.value, url)?.toDomain()
     override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> =
         dao.findReadyForProcessing(now.toEpochMilli(), limit).map { it.toDomain() }
+
+    override suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean =
+        dao.markProcessed(id.value, canonicalUrl) == 1
+
+    override suspend fun markFetched(
+        id: DiscoveredItemId,
+        canonicalUrl: String,
+        resolvedUrl: String?,
+        contentHash: String,
+    ): Boolean = dao.markFetched(id.value, canonicalUrl, resolvedUrl, contentHash) == 1
+
+    override suspend fun markFailed(
+        id: DiscoveredItemId,
+        processingAttempts: Int,
+        nextProcessingAt: Instant,
+        lastProcessingError: String,
+    ): Boolean = dao.markFailed(
+        id = id.value,
+        processingAttempts = processingAttempts,
+        nextProcessingAtEpochMillis = nextProcessingAt.toEpochMilli(),
+        lastProcessingError = lastProcessingError,
+    ) == 1
+
+    override suspend fun markSkipped(
+        id: DiscoveredItemId,
+        canonicalUrl: String?,
+        lastProcessingError: String,
+    ): Boolean = dao.markSkipped(id.value, canonicalUrl, lastProcessingError) == 1
+
     override suspend fun storeRawContent(content: RawContent) = dao.upsertRawContent(content.toEntity())
     override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = dao.findRawContent(id.value)?.toDomain()
     override suspend fun deleteRawContent(id: DiscoveredItemId) = dao.deleteRawContent(id.value)
