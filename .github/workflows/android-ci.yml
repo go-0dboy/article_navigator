@@ -87,7 +87,7 @@ jobs:
 
       - name: Upload Room schemas
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: room-schemas
           path: storage/database/schemas
@@ -111,7 +111,7 @@ jobs:
           test "$PACKAGE_ID" = "io.github.go0dboy.articlenavigator.dev"
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: article-navigator-debug
           path: app/build/outputs/apk/debug/app-debug.apk
