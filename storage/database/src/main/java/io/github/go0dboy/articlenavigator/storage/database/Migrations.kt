@@ -29,11 +29,6 @@ val MIGRATION_2_3 = Migration(2, 3) { connection ->
     connection.prepare("CREATE INDEX IF NOT EXISTS `index_discovered_items_nextProcessingAtEpochMillis` ON `discovered_items` (`nextProcessingAtEpochMillis`)")
         .use { it.step() }
 
-    // Phase 3 had no Inbox or content-ingestion stage. Its bundled device-test
-    // source and discovery rows are diagnostic data, not user knowledge. Remove
-    // them during the upgrade so Phase 4 starts with a clean user-facing source
-    // list and cannot ingest old diagnostics in the background. The diagnostics
-    // screen can explicitly recreate a pinned control source when requested.
     connection.prepare("DELETE FROM `discovered_items` WHERE `sourceId` = 'phase3-sample-rss'")
         .use { it.step() }
     connection.prepare("DELETE FROM `sources` WHERE `id` = 'phase3-sample-rss'")
@@ -86,8 +81,6 @@ val MIGRATION_2_3 = Migration(2, 3) { connection ->
     connection.prepare("CREATE INDEX IF NOT EXISTS `index_documents_contentHash` ON `documents` (`contentHash`)")
         .use { it.step() }
 
-    // Phase 1 keyed provenance only by (document, source), which could collapse
-    // distinct URLs from the same source. Re-key it by an explicit stable origin key.
     connection.prepare("ALTER TABLE `document_provenance` RENAME TO `document_provenance_legacy`")
         .use { it.step() }
     connection.prepare(
@@ -117,5 +110,91 @@ val MIGRATION_2_3 = Migration(2, 3) { connection ->
     ).use { it.step() }
     connection.prepare("DROP TABLE `document_provenance_legacy`").use { it.step() }
     connection.prepare("CREATE INDEX IF NOT EXISTS `index_document_provenance_sourceId` ON `document_provenance` (`sourceId`)")
+        .use { it.step() }
+}
+
+/**
+ * v4 hardens collection ownership and long-lived provenance.
+ * Network work remains outside DB transactions; only claim/commit state is persisted here.
+ */
+val MIGRATION_3_4 = Migration(3, 4) { connection ->
+    connection.prepare("ALTER TABLE `sources` ADD COLUMN `settingsRevision` INTEGER NOT NULL DEFAULT 0").use { it.step() }
+    connection.prepare("ALTER TABLE `sources` ADD COLUMN `leaseToken` TEXT").use { it.step() }
+    connection.prepare("ALTER TABLE `sources` ADD COLUMN `leaseExpiresAtEpochMillis` INTEGER").use { it.step() }
+    connection.prepare("CREATE INDEX IF NOT EXISTS `index_sources_leaseExpiresAtEpochMillis` ON `sources` (`leaseExpiresAtEpochMillis`)")
+        .use { it.step() }
+
+    connection.prepare("ALTER TABLE `discovered_items` ADD COLUMN `resolvedUrl` TEXT").use { it.step() }
+    connection.prepare("ALTER TABLE `discovered_items` ADD COLUMN `lastSeenAtEpochMillis` INTEGER NOT NULL DEFAULT 0").use { it.step() }
+    connection.prepare("UPDATE `discovered_items` SET `lastSeenAtEpochMillis` = `discoveredAtEpochMillis` WHERE `lastSeenAtEpochMillis` = 0")
+        .use { it.step() }
+    connection.prepare("CREATE INDEX IF NOT EXISTS `index_discovered_items_lastSeenAtEpochMillis` ON `discovered_items` (`lastSeenAtEpochMillis`)")
+        .use { it.step() }
+
+    connection.prepare("ALTER TABLE `inbox_origins` ADD COLUMN `resolvedUrl` TEXT").use { it.step() }
+
+    // Saved provenance is a durable snapshot. Removing a subscription must not delete it.
+    connection.prepare("ALTER TABLE `document_provenance` RENAME TO `document_provenance_v3`").use { it.step() }
+    connection.prepare(
+        """
+        CREATE TABLE `document_provenance` (
+            `documentId` TEXT NOT NULL,
+            `originKey` TEXT NOT NULL,
+            `sourceId` TEXT NOT NULL,
+            `discoveredUrl` TEXT NOT NULL,
+            `resolvedUrl` TEXT,
+            `discoveredAtEpochMillis` INTEGER NOT NULL,
+            `fetchedAtEpochMillis` INTEGER NOT NULL,
+            `sourceNameSnapshot` TEXT NOT NULL,
+            `sourceUrlSnapshot` TEXT NOT NULL,
+            `sourceTypeSnapshot` TEXT NOT NULL,
+            PRIMARY KEY(`documentId`, `originKey`),
+            FOREIGN KEY(`documentId`) REFERENCES `documents`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+            FOREIGN KEY(`sourceId`) REFERENCES `sources`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare(
+        """
+        INSERT INTO `document_provenance` (
+            `documentId`, `originKey`, `sourceId`, `discoveredUrl`, `resolvedUrl`,
+            `discoveredAtEpochMillis`, `fetchedAtEpochMillis`,
+            `sourceNameSnapshot`, `sourceUrlSnapshot`, `sourceTypeSnapshot`
+        )
+        SELECT p.`documentId`, p.`originKey`, p.`sourceId`, p.`discoveredUrl`, NULL,
+               p.`discoveredAtEpochMillis`, p.`fetchedAtEpochMillis`,
+               s.`name`, s.`url`, s.`type`
+        FROM `document_provenance_v3` p
+        JOIN `sources` s ON s.`id` = p.`sourceId`
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare("DROP TABLE `document_provenance_v3`").use { it.step() }
+    connection.prepare("CREATE INDEX IF NOT EXISTS `index_document_provenance_sourceId` ON `document_provenance` (`sourceId`)")
+        .use { it.step() }
+
+    // Seen history is also retained while a source is archived; an accidental hard delete is rejected.
+    connection.prepare("ALTER TABLE `seen_fingerprints` RENAME TO `seen_fingerprints_v3`").use { it.step() }
+    connection.prepare(
+        """
+        CREATE TABLE `seen_fingerprints` (
+            `canonicalUrlHash` TEXT NOT NULL,
+            `contentHash` TEXT,
+            `sourceId` TEXT NOT NULL,
+            `seenAtEpochMillis` INTEGER NOT NULL,
+            `disposition` TEXT NOT NULL,
+            PRIMARY KEY(`canonicalUrlHash`, `sourceId`),
+            FOREIGN KEY(`sourceId`) REFERENCES `sources`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare(
+        """
+        INSERT INTO `seen_fingerprints` (`canonicalUrlHash`, `contentHash`, `sourceId`, `seenAtEpochMillis`, `disposition`)
+        SELECT `canonicalUrlHash`, `contentHash`, `sourceId`, `seenAtEpochMillis`, `disposition`
+        FROM `seen_fingerprints_v3`
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare("DROP TABLE `seen_fingerprints_v3`").use { it.step() }
+    connection.prepare("CREATE INDEX IF NOT EXISTS `index_seen_fingerprints_sourceId` ON `seen_fingerprints` (`sourceId`)")
         .use { it.step() }
 }
