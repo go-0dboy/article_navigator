@@ -32,6 +32,7 @@ class RoomIngestionRepository(
 ) : IngestionRepository {
     override suspend fun upsertDiscovered(item: DiscoveredItem) = dao.upsertDiscovered(item.toEntity())
     override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = dao.findDiscoveredById(id.value)?.toDomain()
+    override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? = dao.findDiscovered(sourceId.value, url)?.toDomain()
     override suspend fun storeRawContent(content: RawContent) = dao.upsertRawContent(content.toEntity())
     override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = dao.findRawContent(id.value)?.toDomain()
 }

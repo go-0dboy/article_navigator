@@ -31,6 +31,9 @@ interface IngestionDao {
     @Query("SELECT * FROM discovered_items WHERE id = :id LIMIT 1")
     suspend fun findDiscoveredById(id: String): DiscoveredItemEntity?
 
+    @Query("SELECT * FROM discovered_items WHERE sourceId = :sourceId AND url = :url LIMIT 1")
+    suspend fun findDiscovered(sourceId: String, url: String): DiscoveredItemEntity?
+
     @Upsert
     suspend fun upsertRawContent(content: RawContentEntity)
 

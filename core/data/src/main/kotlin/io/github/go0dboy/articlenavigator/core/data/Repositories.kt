@@ -25,6 +25,7 @@ interface SourceRepository {
 interface IngestionRepository {
     suspend fun upsertDiscovered(item: DiscoveredItem)
     suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem?
+    suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem?
     suspend fun storeRawContent(content: RawContent)
     suspend fun loadRawContent(id: DiscoveredItemId): RawContent?
 }
