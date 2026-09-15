@@ -3,14 +3,14 @@ package io.github.go0dboy.articlenavigator.scheduler.core
 import io.github.go0dboy.articlenavigator.collector.api.DiscoveryResult
 import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
-import io.github.go0dboy.articlenavigator.core.data.CollectionStateRepository
-import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
+import io.github.go0dboy.articlenavigator.core.data.CollectionCommitOutcome
+import io.github.go0dboy.articlenavigator.core.data.CollectionRepository
+import io.github.go0dboy.articlenavigator.core.data.SourceCollectionLease
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
 import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
 import io.github.go0dboy.articlenavigator.core.model.PollPolicy
-import io.github.go0dboy.articlenavigator.core.model.RawContent
 import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceCollectionState
 import io.github.go0dboy.articlenavigator.core.model.SourceCursor
@@ -47,13 +47,18 @@ class CollectionOrchestratorIdempotencyTest {
             canonicalUrl = "https://example.test/article",
             title = "Old title",
             discoveredAt = now.minusSeconds(600),
+            lastSeenAt = now.minusSeconds(600),
             contentHash = "already-processed-hash",
+            relevanceScore = 0.75,
             status = DiscoveryStatus.PROCESSED,
             processingAttempts = 2,
         )
         val fresh = existing.copy(
             title = "Updated feed title",
+            resolvedUrl = "https://cdn.example.test/article",
+            lastSeenAt = now,
             contentHash = null,
+            relevanceScore = null,
             status = DiscoveryStatus.DISCOVERED,
             processingAttempts = 0,
         )
@@ -67,27 +72,32 @@ class CollectionOrchestratorIdempotencyTest {
         }
         val orchestrator = CollectionOrchestrator(
             sourceRepository = repositories,
-            ingestionRepository = repositories,
-            stateRepository = repositories,
+            collectionRepository = repositories,
             adapterRegistry = SourceAdapterRegistry(listOf(adapter)),
             clock = Clock.fixed(now, ZoneOffset.UTC),
+            runTokenFactory = { "run-1" },
         )
 
         val report = orchestrator.run(CollectionRunContext(isUnmeteredNetwork = true))
         val stored = repositories.item
 
-        assertEquals(0, (report.results.single() as SourceCollectionResult.Success).discoveredCount)
+        assertEquals(1, (report.results.single() as SourceCollectionResult.Success).discoveredCount)
         assertEquals(DiscoveryStatus.PROCESSED, stored.status)
         assertEquals("already-processed-hash", stored.contentHash)
+        assertEquals(0.75, stored.relevanceScore!!, 0.0)
         assertEquals(2, stored.processingAttempts)
+        assertEquals(now.minusSeconds(600), stored.discoveredAt)
         assertEquals("Updated feed title", stored.title)
+        assertEquals("https://cdn.example.test/article", stored.resolvedUrl)
+        assertEquals(now, stored.lastSeenAt)
     }
 
-    private inner class Repositories(initial: DiscoveredItem) : SourceRepository, IngestionRepository, CollectionStateRepository {
+    private inner class Repositories(initial: DiscoveredItem) : SourceRepository, CollectionRepository {
         var storedSource = source
         var item = initial
         var cursor: SourceCursor? = null
         var state: SourceCollectionState? = null
+        var lease: SourceCollectionLease? = null
 
         override suspend fun upsert(source: Source) { storedSource = source }
         override suspend fun findById(id: SourceId): Source? = storedSource.takeIf { it.id == id }
@@ -95,15 +105,80 @@ class CollectionOrchestratorIdempotencyTest {
         override suspend fun listAll(): List<Source> = listOf(storedSource)
         override suspend fun loadCursor(sourceId: SourceId): SourceCursor? = cursor
         override suspend fun saveCursor(cursor: SourceCursor) { this.cursor = cursor }
-        override suspend fun load(sourceId: SourceId): SourceCollectionState? = state
-        override suspend fun save(state: SourceCollectionState) { this.state = state }
-        override suspend fun upsertDiscovered(item: DiscoveredItem) { this.item = item }
-        override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = item.takeIf { it.id == id }
-        override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? =
-            item.takeIf { it.sourceId == sourceId && it.url == url }
-        override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> = emptyList()
-        override suspend fun storeRawContent(content: RawContent) = Unit
-        override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = null
-        override suspend fun deleteRawContent(id: DiscoveredItemId) = Unit
+        override suspend fun markDue(sourceId: SourceId, at: Instant): Boolean {
+            if (storedSource.id != sourceId) return false
+            storedSource = storedSource.copy(nextCheckAt = at)
+            return true
+        }
+
+        override suspend fun tryClaim(
+            sourceId: SourceId,
+            runToken: String,
+            now: Instant,
+            leaseExpiresAt: Instant,
+        ): SourceCollectionLease? {
+            if (sourceId != storedSource.id) return null
+            lease?.takeIf { it.expiresAt.isAfter(now) }?.let { return null }
+            return SourceCollectionLease(
+                source = storedSource,
+                cursor = cursor,
+                previousState = state,
+                runToken = runToken,
+                settingsRevision = storedSource.settingsRevision,
+                expiresAt = leaseExpiresAt,
+            ).also { lease = it }
+        }
+
+        override suspend fun commitSuccess(
+            lease: SourceCollectionLease,
+            items: List<DiscoveredItem>,
+            cursor: SourceCursor,
+            completedAt: Instant,
+            nextCheckAt: Instant,
+            discoveredCount: Int,
+        ): CollectionCommitOutcome {
+            if (!owns(lease)) return CollectionCommitOutcome.STALE
+            items.firstOrNull { it.id == item.id }?.let { incoming ->
+                item = item.copy(
+                    canonicalUrl = incoming.canonicalUrl,
+                    resolvedUrl = incoming.resolvedUrl,
+                    title = incoming.title,
+                    publishedAt = incoming.publishedAt,
+                    lastSeenAt = incoming.lastSeenAt,
+                )
+            }
+            this.cursor = cursor
+            state = SourceCollectionState(
+                sourceId = storedSource.id,
+                consecutiveFailures = 0,
+                lastAttemptAt = completedAt,
+                lastDiscoveredCount = discoveredCount,
+            )
+            storedSource = storedSource.copy(
+                lastSuccessfulCheckAt = completedAt,
+                nextCheckAt = nextCheckAt,
+            )
+            this.lease = null
+            return CollectionCommitOutcome.APPLIED
+        }
+
+        override suspend fun commitFailure(
+            lease: SourceCollectionLease,
+            completedAt: Instant,
+            nextCheckAt: Instant,
+            errorType: String,
+            errorMessage: String?,
+        ): CollectionCommitOutcome {
+            if (!owns(lease)) return CollectionCommitOutcome.STALE
+            this.lease = null
+            return CollectionCommitOutcome.APPLIED
+        }
+
+        override suspend fun release(lease: SourceCollectionLease) {
+            if (this.lease?.runToken == lease.runToken) this.lease = null
+        }
+
+        private fun owns(candidate: SourceCollectionLease): Boolean =
+            lease?.runToken == candidate.runToken && storedSource.settingsRevision == candidate.settingsRevision
     }
 }
