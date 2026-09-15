@@ -2,6 +2,7 @@ package io.github.go0dboy.articlenavigator.scheduler.core
 
 import io.github.go0dboy.articlenavigator.collector.api.RetryPolicy
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
+import io.github.go0dboy.articlenavigator.collector.api.SourceCollectionException
 import io.github.go0dboy.articlenavigator.core.data.CollectionCommitOutcome
 import io.github.go0dboy.articlenavigator.core.data.CollectionRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceCollectionLease
@@ -10,7 +11,6 @@ import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import java.time.Clock
 import java.time.Duration
-import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -23,17 +23,12 @@ data class CollectionRunContext(val isUnmeteredNetwork: Boolean)
 
 sealed interface SourceCollectionResult {
     val sourceId: SourceId
-
     data class Success(override val sourceId: SourceId, val discoveredCount: Int) : SourceCollectionResult
     data class Skipped(override val sourceId: SourceId, val reason: SkipReason) : SourceCollectionResult
     data class Failure(override val sourceId: SourceId, val errorType: String, val message: String?) : SourceCollectionResult
 }
 
-enum class SkipReason {
-    REQUIRES_UNMETERED_NETWORK,
-    ALREADY_CLAIMED,
-    STALE_RESULT,
-}
+enum class SkipReason { REQUIRES_UNMETERED_NETWORK, ALREADY_CLAIMED, STALE_RESULT }
 
 data class CollectionRunReport(val results: List<SourceCollectionResult>) {
     val successes: Int get() = results.count { it is SourceCollectionResult.Success }
@@ -43,24 +38,18 @@ data class CollectionRunReport(val results: List<SourceCollectionResult>) {
 
 class SourceAdapterRegistry(adapters: List<SourceAdapter>) {
     private val byAdapterType: Map<String, SourceAdapter>
-
     init {
         require(adapters.all { it.adapterType.isNotBlank() }) { "Source adapter type must not be blank" }
         val duplicates = adapters.groupBy { it.adapterType }.filterValues { it.size > 1 }.keys
         require(duplicates.isEmpty()) { "Multiple adapters registered for: $duplicates" }
         byAdapterType = adapters.associateBy { it.adapterType }
     }
-
-    fun resolve(source: Source): SourceAdapter? =
-        byAdapterType[source.adapterType]?.takeIf { it.supports(source) }
+    fun resolve(source: Source): SourceAdapter? = byAdapterType[source.adapterType]?.takeIf { it.supports(source) }
 }
 
 /**
- * Persisted scheduler orchestrator.
- *
- * A source is processed only after an atomic expiring lease is acquired. Network I/O happens
- * outside the database transaction. The result is committed atomically only while the same
- * run token owns the lease and source settingsRevision has not changed.
+ * Source execution is protected by an expiring persisted lease. Network I/O occurs outside the
+ * DB transaction. A result is committed only if runToken and settingsRevision still match.
  */
 class CollectionOrchestrator(
     private val sourceRepository: SourceRepository,
@@ -87,7 +76,6 @@ class CollectionOrchestrator(
         val deadline = startedAt.plus(maxRunDuration)
         val due = sourceRepository.findDue(startedAt, maxSourcesPerRun)
         val results = mutableListOf<SourceCollectionResult>()
-
         for (batch in due.chunked(maxParallelism)) {
             if (!clock.instant().isBefore(deadline)) break
             results += batch.map { source -> async { collectOne(source, context) } }.awaitAll()
@@ -95,14 +83,10 @@ class CollectionOrchestrator(
         CollectionRunReport(results)
     }
 
-    private suspend fun collectOne(
-        candidate: Source,
-        context: CollectionRunContext,
-    ): SourceCollectionResult {
+    private suspend fun collectOne(candidate: Source, context: CollectionRunContext): SourceCollectionResult {
         if (candidate.pollPolicy.requiresUnmeteredNetwork && !context.isUnmeteredNetwork) {
             return SourceCollectionResult.Skipped(candidate.id, SkipReason.REQUIRES_UNMETERED_NETWORK)
         }
-
         val claimedAt = clock.instant()
         val lease = collectionRepository.tryClaim(
             sourceId = candidate.id,
@@ -115,9 +99,11 @@ class CollectionOrchestrator(
             val adapter = adapterRegistry.resolve(lease.source)
                 ?: return recordSourceFailure(
                     lease,
-                    IllegalStateException("No compatible adapter '${lease.source.adapterType}' for ${lease.source.type}"),
+                    SourceCollectionException(
+                        "No compatible adapter '${lease.source.adapterType}' for ${lease.source.type}",
+                        retryable = false,
+                    ),
                 )
-
             val discovery = try {
                 adapter.discover(lease.source, lease.cursor)
             } catch (cancelled: CancellationException) {
@@ -141,22 +127,16 @@ class CollectionOrchestrator(
                 CollectionCommitOutcome.STALE -> SourceCollectionResult.Skipped(lease.source.id, SkipReason.STALE_RESULT)
             }
         } catch (cancelled: CancellationException) {
-            withContext(NonCancellable) {
-                runCatching { collectionRepository.release(lease) }
-            }
+            withContext(NonCancellable) { runCatching { collectionRepository.release(lease) } }
             throw cancelled
         }
     }
 
-    private suspend fun recordSourceFailure(
-        lease: SourceCollectionLease,
-        error: Exception,
-    ): SourceCollectionResult {
+    private suspend fun recordSourceFailure(lease: SourceCollectionLease, error: Exception): SourceCollectionResult {
         val completedAt = clock.instant()
         val failures = (lease.previousState?.consecutiveFailures ?: 0) + 1
-        val retryDelay = retryDelayAfterFailure(failures, lease.source.pollPolicy.interval)
+        val retryDelay = retryDelayAfterFailure(error, failures, lease.source.pollPolicy.interval)
         val errorType = error::class.qualifiedName ?: error::class.simpleName ?: "Exception"
-
         return when (
             collectionRepository.commitFailure(
                 lease = lease,
@@ -166,20 +146,20 @@ class CollectionOrchestrator(
                 errorMessage = error.message,
             )
         ) {
-            CollectionCommitOutcome.APPLIED -> SourceCollectionResult.Failure(
-                lease.source.id,
-                errorType,
-                error.message,
-            )
-            CollectionCommitOutcome.STALE -> SourceCollectionResult.Skipped(
-                lease.source.id,
-                SkipReason.STALE_RESULT,
-            )
+            CollectionCommitOutcome.APPLIED -> SourceCollectionResult.Failure(lease.source.id, errorType, error.message)
+            CollectionCommitOutcome.STALE -> SourceCollectionResult.Skipped(lease.source.id, SkipReason.STALE_RESULT)
         }
     }
 
-    private fun retryDelayAfterFailure(failureCount: Int, normalInterval: Duration): Duration {
-        if (failureCount >= retryPolicy.maxAttempts) return normalInterval
-        return retryPolicy.delayBeforeAttempt(failureCount + 1)
+    private fun retryDelayAfterFailure(error: Exception, failureCount: Int, normalInterval: Duration): Duration {
+        val classified = error as? SourceCollectionException
+        if (classified?.retryable == false) return normalInterval
+        val policyDelay = if (failureCount >= retryPolicy.maxAttempts) {
+            normalInterval
+        } else {
+            retryPolicy.delayBeforeAttempt(failureCount + 1)
+        }
+        val serverDelay = classified?.retryAfter
+        return if (serverDelay != null && serverDelay > policyDelay) serverDelay else policyDelay
     }
 }
