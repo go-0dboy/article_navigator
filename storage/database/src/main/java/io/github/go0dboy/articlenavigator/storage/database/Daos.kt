@@ -7,6 +7,12 @@ import androidx.room3.Query
 import androidx.room3.Transaction
 import androidx.room3.Upsert
 
+data class CollectionClaimSnapshot(
+    val source: SourceEntity,
+    val cursor: SourceCursorEntity?,
+    val state: SourceCollectionStateEntity?,
+)
+
 @Dao
 interface SourceDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -130,15 +136,38 @@ interface CollectionDao {
     @Query("SELECT * FROM source_collection_states WHERE sourceId = :sourceId LIMIT 1")
     suspend fun state(sourceId: String): SourceCollectionStateEntity?
 
+    @Transaction
+    suspend fun tryClaim(
+        sourceId: String,
+        runToken: String,
+        nowEpochMillis: Long,
+        leaseExpiresAtEpochMillis: Long,
+    ): CollectionClaimSnapshot? {
+        if (claim(sourceId, runToken, nowEpochMillis, leaseExpiresAtEpochMillis) != 1) return null
+        val claimedSource = checkNotNull(source(sourceId)) { "Claimed source disappeared: $sourceId" }
+        return CollectionClaimSnapshot(
+            source = claimedSource,
+            cursor = cursor(sourceId),
+            state = state(sourceId),
+        )
+    }
+
     @Query(
         """
         SELECT COUNT(*) FROM sources
         WHERE id = :sourceId
           AND leaseToken = :runToken
           AND settingsRevision = :settingsRevision
+          AND leaseExpiresAtEpochMillis IS NOT NULL
+          AND leaseExpiresAtEpochMillis > :atEpochMillis
         """,
     )
-    suspend fun ownsLease(sourceId: String, runToken: String, settingsRevision: Long): Int
+    suspend fun ownsLease(
+        sourceId: String,
+        runToken: String,
+        settingsRevision: Long,
+        atEpochMillis: Long,
+    ): Int
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertDiscoveryIfAbsent(item: DiscoveredItemEntity): Long
@@ -180,6 +209,8 @@ interface CollectionDao {
         WHERE id = :sourceId
           AND leaseToken = :runToken
           AND settingsRevision = :settingsRevision
+          AND leaseExpiresAtEpochMillis IS NOT NULL
+          AND leaseExpiresAtEpochMillis > :completedAtEpochMillis
         """,
     )
     suspend fun finishSuccess(
@@ -199,12 +230,15 @@ interface CollectionDao {
         WHERE id = :sourceId
           AND leaseToken = :runToken
           AND settingsRevision = :settingsRevision
+          AND leaseExpiresAtEpochMillis IS NOT NULL
+          AND leaseExpiresAtEpochMillis > :completedAtEpochMillis
         """,
     )
     suspend fun finishFailure(
         sourceId: String,
         runToken: String,
         settingsRevision: Long,
+        completedAtEpochMillis: Long,
         nextCheckAtEpochMillis: Long,
     ): Int
 
@@ -222,7 +256,7 @@ interface CollectionDao {
         completedAtEpochMillis: Long,
         nextCheckAtEpochMillis: Long,
     ): Boolean {
-        if (ownsLease(sourceId, runToken, settingsRevision) != 1) return false
+        if (ownsLease(sourceId, runToken, settingsRevision, completedAtEpochMillis) != 1) return false
         for (item in items) {
             insertDiscoveryIfAbsent(item)
             updateDiscoveryMetadata(
@@ -254,19 +288,27 @@ interface CollectionDao {
         runToken: String,
         settingsRevision: Long,
         state: SourceCollectionStateEntity,
+        completedAtEpochMillis: Long,
         nextCheckAtEpochMillis: Long,
     ): Boolean {
-        if (ownsLease(sourceId, runToken, settingsRevision) != 1) return false
+        if (ownsLease(sourceId, runToken, settingsRevision, completedAtEpochMillis) != 1) return false
         upsertState(state)
-        check(finishFailure(sourceId, runToken, settingsRevision, nextCheckAtEpochMillis) == 1) {
-            "Collection lease changed during failure commit"
-        }
+        check(
+            finishFailure(
+                sourceId,
+                runToken,
+                settingsRevision,
+                completedAtEpochMillis,
+                nextCheckAtEpochMillis,
+            ) == 1,
+        ) { "Collection lease changed during failure commit" }
         return true
     }
 }
 
 @Dao
 interface IngestionDao {
+    /** Creation/import path only. Processing transitions use targeted updates below. */
     @Upsert
     suspend fun upsertDiscovered(item: DiscoveredItemEntity)
 
@@ -284,6 +326,66 @@ interface IngestionDao {
 
     @Query("SELECT * FROM discovered_items ORDER BY discoveredAtEpochMillis DESC LIMIT :limit")
     suspend fun latestDiscovered(limit: Int): List<DiscoveredItemEntity>
+
+    @Query(
+        """
+        UPDATE discovered_items SET
+            canonicalUrl = COALESCE(:canonicalUrl, canonicalUrl),
+            status = 'PROCESSED',
+            nextProcessingAtEpochMillis = NULL,
+            lastProcessingError = NULL
+        WHERE id = :id
+        """,
+    )
+    suspend fun markProcessed(id: String, canonicalUrl: String?): Int
+
+    @Query(
+        """
+        UPDATE discovered_items SET
+            canonicalUrl = COALESCE(:canonicalUrl, canonicalUrl),
+            resolvedUrl = COALESCE(:resolvedUrl, resolvedUrl),
+            contentHash = :contentHash,
+            status = 'FETCHED',
+            nextProcessingAtEpochMillis = NULL,
+            lastProcessingError = NULL
+        WHERE id = :id
+        """,
+    )
+    suspend fun markFetched(
+        id: String,
+        canonicalUrl: String,
+        resolvedUrl: String?,
+        contentHash: String,
+    ): Int
+
+    @Query(
+        """
+        UPDATE discovered_items SET
+            status = 'FAILED',
+            processingAttempts = :processingAttempts,
+            nextProcessingAtEpochMillis = :nextProcessingAtEpochMillis,
+            lastProcessingError = :lastProcessingError
+        WHERE id = :id
+        """,
+    )
+    suspend fun markFailed(
+        id: String,
+        processingAttempts: Int,
+        nextProcessingAtEpochMillis: Long,
+        lastProcessingError: String,
+    ): Int
+
+    @Query(
+        """
+        UPDATE discovered_items SET
+            canonicalUrl = COALESCE(:canonicalUrl, canonicalUrl),
+            status = 'SKIPPED',
+            nextProcessingAtEpochMillis = NULL,
+            lastProcessingError = :lastProcessingError
+        WHERE id = :id
+        """,
+    )
+    suspend fun markSkipped(id: String, canonicalUrl: String?, lastProcessingError: String): Int
 
     @Upsert
     suspend fun upsertRawContent(content: RawContentEntity)
