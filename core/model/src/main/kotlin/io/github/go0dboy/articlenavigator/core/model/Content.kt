@@ -91,6 +91,7 @@ data class DocumentProvenance(
     val discoveredUrl: String,
     val discoveredAt: Instant,
     val fetchedAt: Instant,
+    val originKey: String = "${sourceId.value}|$discoveredUrl",
 )
 
 data class SeenFingerprint(
