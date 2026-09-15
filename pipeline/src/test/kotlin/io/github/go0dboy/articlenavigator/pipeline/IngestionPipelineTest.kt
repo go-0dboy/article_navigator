@@ -242,6 +242,7 @@ private class FakeSourceRepository(private val source: Source) : SourceRepositor
     override suspend fun listAll(): List<Source> = listOf(source)
     override suspend fun loadCursor(sourceId: SourceId): SourceCursor? = null
     override suspend fun saveCursor(cursor: SourceCursor) = Unit
+    override suspend fun markDue(sourceId: SourceId, at: Instant): Boolean = false
 }
 
 private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionRepository {

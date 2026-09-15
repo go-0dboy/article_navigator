@@ -29,6 +29,7 @@ class RssAtomSourceAdapterTest {
                 headers = mapOf("ETag" to listOf("\"v2\""), "Last-Modified" to listOf("Tue, 15 Sep 2026 09:00:00 GMT")),
                 contentType = "application/rss+xml",
                 body = RSS_FIXTURE.toByteArray(),
+                finalUrl = "https://example.com/feed.xml",
             ),
         )
         val source = source(SourceType.RSS, "https://Example.com/feed.xml")
@@ -51,7 +52,13 @@ class RssAtomSourceAdapterTest {
     @Test
     fun repeatedDiscoveryProducesStableIdsForDatabaseIdempotency() = runTest {
         val source = source(SourceType.RSS, "https://example.com/feed.xml")
-        val response = HttpResponse(200, emptyMap(), "application/rss+xml", RSS_FIXTURE.toByteArray())
+        val response = HttpResponse(
+            statusCode = 200,
+            headers = emptyMap(),
+            contentType = "application/rss+xml",
+            body = RSS_FIXTURE.toByteArray(),
+            finalUrl = "https://example.com/feed.xml",
+        )
         val transport = FakeTransport(response, response)
         val adapter = RssAtomSourceAdapter(transport, clock)
 
@@ -65,7 +72,13 @@ class RssAtomSourceAdapterTest {
     @Test
     fun discoversAtomWithRelativeAlternateLink() = runTest {
         val transport = FakeTransport(
-            HttpResponse(200, emptyMap(), "application/atom+xml", ATOM_FIXTURE.toByteArray()),
+            HttpResponse(
+                statusCode = 200,
+                headers = emptyMap(),
+                contentType = "application/atom+xml",
+                body = ATOM_FIXTURE.toByteArray(),
+                finalUrl = "https://example.com/feeds/main.xml",
+            ),
         )
         val source = source(SourceType.ATOM, "https://example.com/feeds/main.xml")
 
@@ -80,7 +93,15 @@ class RssAtomSourceAdapterTest {
 
     @Test
     fun notModifiedReturnsNoItemsAndPreservesCursor() = runTest {
-        val transport = FakeTransport(HttpResponse(304, emptyMap(), null, ByteArray(0)))
+        val transport = FakeTransport(
+            HttpResponse(
+                statusCode = 304,
+                headers = emptyMap(),
+                contentType = null,
+                body = ByteArray(0),
+                finalUrl = "https://example.com/feed.xml",
+            ),
+        )
         val source = source(SourceType.RSS, "https://example.com/feed.xml")
         val cursor = SourceCursor(source.id, etag = "\"v1\"", lastGuid = "old-guid")
 
@@ -95,7 +116,13 @@ class RssAtomSourceAdapterTest {
     @Test(expected = FeedParseException::class)
     fun malformedOrUnsupportedXmlFailsExplicitly() = runTest {
         val transport = FakeTransport(
-            HttpResponse(200, emptyMap(), "application/xml", "<html><body>not a feed</body></html>".toByteArray()),
+            HttpResponse(
+                statusCode = 200,
+                headers = emptyMap(),
+                contentType = "application/xml",
+                body = "<html><body>not a feed</body></html>".toByteArray(),
+                finalUrl = "https://example.com/feed.xml",
+            ),
         )
         RssAtomSourceAdapter(transport, clock).discover(
             source(SourceType.RSS, "https://example.com/feed.xml"),
