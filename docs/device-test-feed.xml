@@ -7,19 +7,19 @@
     <item>
       <guid>phase4-device-item-1</guid>
       <title>Phase 4 article one</title>
-      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/main/docs/device-test-article-1.txt</link>
+      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/f2ffb68aa9777c540847783c33a1cc662a9da7fa/docs/device-test-article-1.txt</link>
       <pubDate>Tue, 15 Sep 2026 12:20:00 GMT</pubDate>
     </item>
     <item>
       <guid>phase4-device-item-2</guid>
       <title>Phase 4 article two</title>
-      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/main/docs/device-test-article-2.txt</link>
+      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/f2ffb68aa9777c540847783c33a1cc662a9da7fa/docs/device-test-article-2.txt</link>
       <pubDate>Tue, 15 Sep 2026 12:21:00 GMT</pubDate>
     </item>
     <item>
       <guid>phase4-device-item-3</guid>
       <title>Phase 4 article three</title>
-      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/main/docs/device-test-article-3.txt</link>
+      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/f2ffb68aa9777c540847783c33a1cc662a9da7fa/docs/device-test-article-3.txt</link>
       <pubDate>Tue, 15 Sep 2026 12:22:00 GMT</pubDate>
     </item>
   </channel>
