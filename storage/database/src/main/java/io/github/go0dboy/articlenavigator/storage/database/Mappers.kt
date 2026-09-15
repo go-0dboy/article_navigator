@@ -179,11 +179,12 @@ internal fun DocumentVersionEntity.toDomain() = DocumentVersion(
 )
 
 internal fun DocumentProvenance.toEntity() = DocumentProvenanceEntity(
-    documentId.value, sourceId.value, discoveredUrl, discoveredAt.toEpochMilli(), fetchedAt.toEpochMilli(),
+    documentId.value, originKey, sourceId.value, discoveredUrl, discoveredAt.toEpochMilli(), fetchedAt.toEpochMilli(),
 )
 
 internal fun DocumentProvenanceEntity.toDomain() = DocumentProvenance(
-    DocumentId(documentId), SourceId(sourceId), discoveredUrl, Instant.ofEpochMilli(discoveredAtEpochMillis), Instant.ofEpochMilli(fetchedAtEpochMillis),
+    DocumentId(documentId), SourceId(sourceId), discoveredUrl, Instant.ofEpochMilli(discoveredAtEpochMillis),
+    Instant.ofEpochMilli(fetchedAtEpochMillis), originKey,
 )
 
 internal fun SeenFingerprint.toEntity() = SeenFingerprintEntity(
