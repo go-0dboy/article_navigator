@@ -92,6 +92,17 @@ jobs:
       - name: Assemble debug APK
         run: gradle assembleDebug --stacktrace
 
+      - name: Verify debug APK identity
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/37.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/37.0.0/aapt2"
+          test -f "$APK"
+          "$APKSIGNER" verify "$APK"
+          PACKAGE_ID=$("$AAPT2" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          echo "APK package id: $PACKAGE_ID"
+          test "$PACKAGE_ID" = "io.github.go0dboy.articlenavigator.dev"
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
