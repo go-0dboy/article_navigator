@@ -12,8 +12,10 @@ import io.github.go0dboy.articlenavigator.core.model.SourceType
 import io.github.go0dboy.articlenavigator.core.network.HttpRequest
 import io.github.go0dboy.articlenavigator.core.network.HttpTransport
 import java.io.ByteArrayInputStream
+import java.net.URI
 import java.security.MessageDigest
 import java.time.Clock
+import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZonedDateTime
@@ -40,7 +42,13 @@ class RssAtomSourceAdapter(
         cursor?.etag?.let { requestHeaders["If-None-Match"] = it }
         cursor?.lastModified?.let { requestHeaders["If-Modified-Since"] = it }
 
-        val response = transport.execute(HttpRequest(source.url, requestHeaders))
+        val response = transport.execute(
+            HttpRequest(
+                url = source.url,
+                headers = requestHeaders,
+                maxResponseBytes = MAX_FEED_BYTES,
+            ),
+        )
         val now = clock.instant()
 
         if (response.statusCode == 304) {
@@ -57,7 +65,11 @@ class RssAtomSourceAdapter(
             )
         }
         if (response.statusCode !in 200..299) {
-            throw FeedHttpException(source.url, response.statusCode)
+            throw FeedHttpException(
+                url = source.url,
+                statusCode = response.statusCode,
+                retryAfter = parseRetryAfter(response.header("Retry-After"), now),
+            )
         }
 
         val parsed = parseFeed(response.body, source, now)
@@ -65,8 +77,9 @@ class RssAtomSourceAdapter(
             items = parsed.items,
             nextCursor = SourceCursor(
                 sourceId = source.id,
-                etag = response.header("ETag") ?: cursor?.etag,
-                lastModified = response.header("Last-Modified") ?: cursor?.lastModified,
+                // A fresh 200 response replaces validator state. Missing validators intentionally clear stale ones.
+                etag = response.header("ETag"),
+                lastModified = response.header("Last-Modified"),
                 opaqueCursor = cursor?.opaqueCursor,
                 lastGuid = parsed.firstStableKey ?: cursor?.lastGuid,
                 lastCheckedAt = now,
@@ -79,8 +92,9 @@ class RssAtomSourceAdapter(
             HttpRequest(
                 url = item.url,
                 headers = mapOf(
-                    "Accept" to "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
+                    "Accept" to "text/html, application/xhtml+xml, application/xml;q=0.9, text/plain;q=0.8, */*;q=0.1",
                 ),
+                maxResponseBytes = MAX_ARTICLE_BYTES,
             ),
         )
         return FetchResult(
@@ -88,6 +102,7 @@ class RssAtomSourceAdapter(
             statusCode = response.statusCode,
             contentType = response.contentType,
             body = response.body,
+            resolvedUrl = response.finalUrl,
             fetchedHeaders = response.headers.mapValues { (_, values) -> values.joinToString(",") },
         )
     }
@@ -119,7 +134,8 @@ class RssAtomSourceAdapter(
         val rawLink = directText(element, "link")
             ?: directText(element, "guid")?.takeIf(::isHttpUrl)
             ?: return null
-        val canonical = UrlCanonicalizer.canonicalize(rawLink, source.url) ?: return null
+        val sourceUrl = absoluteUrl(rawLink, source.url) ?: return null
+        val canonical = UrlCanonicalizer.canonicalize(sourceUrl) ?: return null
         val stableKey = directText(element, "guid") ?: canonical
 
         return ParsedEntry(
@@ -127,11 +143,12 @@ class RssAtomSourceAdapter(
             item = DiscoveredItem(
                 id = stableId(source, canonical),
                 sourceId = source.id,
-                url = canonical,
+                url = sourceUrl,
                 canonicalUrl = canonical,
                 title = directText(element, "title"),
                 publishedAt = parseInstant(directText(element, "pubDate", "dc:date", "date")),
                 discoveredAt = discoveredAt,
+                lastSeenAt = discoveredAt,
             ),
         )
     }
@@ -143,7 +160,8 @@ class RssAtomSourceAdapter(
             ?: element.children().firstOrNull { it.tagName().equals("link", ignoreCase = true) }
 
         val rawLink = linkElement?.attr("href")?.takeIf { it.isNotBlank() } ?: return null
-        val canonical = UrlCanonicalizer.canonicalize(rawLink, source.url) ?: return null
+        val sourceUrl = absoluteUrl(rawLink, source.url) ?: return null
+        val canonical = UrlCanonicalizer.canonicalize(sourceUrl) ?: return null
         val stableKey = directText(element, "id") ?: canonical
 
         return ParsedEntry(
@@ -151,11 +169,12 @@ class RssAtomSourceAdapter(
             item = DiscoveredItem(
                 id = stableId(source, canonical),
                 sourceId = source.id,
-                url = canonical,
+                url = sourceUrl,
                 canonicalUrl = canonical,
                 title = directText(element, "title"),
                 publishedAt = parseInstant(directText(element, "published", "updated")),
                 discoveredAt = discoveredAt,
+                lastSeenAt = discoveredAt,
             ),
         )
     }
@@ -166,6 +185,11 @@ class RssAtomSourceAdapter(
             .joinToString("") { "%02x".format(it) }
         return DiscoveredItemId(digest)
     }
+
+    private fun absoluteUrl(value: String, base: String): String? = runCatching {
+        val resolved = URI(base).resolve(value.trim())
+        resolved.takeIf { it.scheme.equals("http", true) || it.scheme.equals("https", true) }?.toASCIIString()
+    }.getOrNull()
 
     private fun directText(element: Element, vararg names: String): String? = names.asSequence()
         .mapNotNull { name ->
@@ -184,6 +208,17 @@ class RssAtomSourceAdapter(
             ?: runCatching { ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant() }.getOrNull()
     }
 
+    private fun parseRetryAfter(value: String?, now: Instant): Duration? {
+        if (value.isNullOrBlank()) return null
+        value.trim().toLongOrNull()?.let { seconds ->
+            if (seconds >= 0) return Duration.ofSeconds(seconds)
+        }
+        val instant = runCatching {
+            ZonedDateTime.parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
+        }.getOrNull() ?: return null
+        return Duration.between(now, instant).takeUnless { it.isNegative }
+    }
+
     private fun isHttpUrl(value: String): Boolean =
         value.startsWith("http://", ignoreCase = true) || value.startsWith("https://", ignoreCase = true)
 
@@ -199,13 +234,18 @@ class RssAtomSourceAdapter(
 
     companion object {
         const val ADAPTER_TYPE: String = "rss-atom"
+        const val MAX_FEED_BYTES: Long = 2L * 1024L * 1024L
+        const val MAX_ARTICLE_BYTES: Long = 5L * 1024L * 1024L
     }
 }
 
 class FeedHttpException(
     url: String,
     val statusCode: Int,
-) : RuntimeException("Feed request failed with HTTP $statusCode: $url")
+    val retryAfter: Duration? = null,
+) : RuntimeException("Feed request failed with HTTP $statusCode: $url") {
+    val isTransient: Boolean = statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+}
 
 class FeedParseException(
     url: String,
