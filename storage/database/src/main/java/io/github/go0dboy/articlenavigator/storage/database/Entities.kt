@@ -125,7 +125,8 @@ data class InboxItemEntity(
     primaryKeys = ["inboxItemId", "discoveredItemId"],
     foreignKeys = [
         ForeignKey(entity = InboxItemEntity::class, parentColumns = ["id"], childColumns = ["inboxItemId"], onDelete = ForeignKey.CASCADE),
-        ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE),
+        // Pending provenance must not disappear because a subscription is hard-deleted.
+        ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.RESTRICT),
     ],
     indices = [Index(value = ["discoveredItemId"], unique = true), Index("sourceId")],
 )
@@ -138,6 +139,9 @@ data class InboxOriginEntity(
     val canonicalUrl: String,
     val discoveredAtEpochMillis: Long,
     val fetchedAtEpochMillis: Long,
+    val sourceNameSnapshot: String,
+    val sourceUrlSnapshot: String,
+    val sourceTypeSnapshot: String,
 )
 
 @Entity(tableName = "documents", indices = [Index(value = ["canonicalUrl"], unique = true), Index("contentHash")])
