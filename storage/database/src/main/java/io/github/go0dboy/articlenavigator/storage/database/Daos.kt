@@ -117,6 +117,7 @@ interface CollectionDao {
             leaseExpiresAtEpochMillis = :leaseExpiresAtEpochMillis
         WHERE id = :sourceId
           AND enabled = 1
+          AND (nextCheckAtEpochMillis IS NULL OR nextCheckAtEpochMillis <= :nowEpochMillis)
           AND (leaseToken IS NULL OR leaseExpiresAtEpochMillis IS NULL OR leaseExpiresAtEpochMillis <= :nowEpochMillis)
         """,
     )
