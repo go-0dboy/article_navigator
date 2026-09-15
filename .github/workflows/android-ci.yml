@@ -29,12 +29,35 @@ jobs:
           packages: platform-tools
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
 
       - name: Set up Gradle 9.6.0
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
+
+      # Bootstrap only: generate the official wrapper with the exact Gradle version
+      # required by AGP 9.4.0. Once these generated files are committed, CI uses
+      # ./gradlew exclusively and this generation step can be removed.
+      - name: Generate verified Gradle Wrapper
+        run: |
+          gradle wrapper \
+            --gradle-version 9.6.0 \
+            --distribution-type bin \
+            --gradle-distribution-sha256-sum bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01
+          echo "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          grep -F "distributionSha256Sum=bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01" gradle/wrapper/gradle-wrapper.properties
+
+      - name: Upload generated Gradle Wrapper
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-wrapper-9.6.0
+          path: |
+            gradlew
+            gradlew.bat
+            gradle/wrapper/gradle-wrapper.jar
+            gradle/wrapper/gradle-wrapper.properties
+          if-no-files-found: error
 
       - name: Snapshot committed Room schemas
         run: |
@@ -95,8 +118,8 @@ jobs:
       - name: Verify debug APK identity
         run: |
           APK="app/build/outputs/apk/debug/app-debug.apk"
-          APKSIGNER="$ANDROID_HOME/build-tools/37.0.0/apksigner"
-          AAPT2="$ANDROID_HOME/build-tools/37.0.0/aapt2"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
           test -f "$APK"
           "$APKSIGNER" verify "$APK"
           PACKAGE_ID=$("$AAPT2" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
