@@ -125,7 +125,7 @@ private fun ArticleNavigatorApp(container: AppContainer) {
                         }
                     },
                     onCollectNow = {
-                        runAction("Ставлю сбор в очередь…") {
+                        runAction("Ставлю сбор пользовательских источников в очередь…") {
                             val id = container.enqueueImmediateCollection()
                             "Сбор запущен: $id"
                         }
@@ -165,9 +165,15 @@ private fun ArticleNavigatorApp(container: AppContainer) {
                     message = actionMessage,
                     busy = busy,
                     onCollectNow = {
-                        runAction("Ставлю сбор в очередь…") {
+                        runAction("Ставлю сбор пользовательских источников в очередь…") {
                             val id = container.enqueueImmediateCollection()
                             "Сбор запущен: $id"
+                        }
+                    },
+                    onRunSample = {
+                        runAction("Подготавливаю контрольный RSS и запускаю полный тест…") {
+                            val id = container.enqueueDeviceSampleCollection()
+                            "Контрольный сбор запущен: $id"
                         }
                     },
                 )
@@ -227,6 +233,7 @@ private fun DiagnosticsScreen(
     message: String,
     busy: Boolean,
     onCollectNow: () -> Unit,
+    onRunSample: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -242,12 +249,19 @@ private fun DiagnosticsScreen(
             enabled = !busy,
             onClick = onCollectNow,
         ) {
-            Text(if (busy) "Выполняется…" else "Запустить сбор сейчас")
+            Text(if (busy) "Выполняется…" else "Запустить сбор пользовательских источников")
+        }
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !busy,
+            onClick = onRunSample,
+        ) {
+            Text("Запустить контрольный RSS-тест")
         }
         Text(message, style = MaterialTheme.typography.bodyMedium)
         status?.let { DeviceStatusCard(it) } ?: Text("Инициализация локальной базы…")
         Text(
-            "Периодический сбор зарегистрирован через WorkManager. Android выбирает точное время фонового запуска; ручной запуск нужен для проверки и немедленного обновления.",
+            "Контрольный RSS добавляется только по явному нажатию кнопки выше. Периодический сбор зарегистрирован через WorkManager; Android выбирает точное время фонового запуска.",
             style = MaterialTheme.typography.bodySmall,
         )
     }
