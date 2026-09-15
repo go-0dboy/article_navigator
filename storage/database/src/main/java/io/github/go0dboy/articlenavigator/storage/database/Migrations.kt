@@ -131,7 +131,47 @@ val MIGRATION_3_4 = Migration(3, 4) { connection ->
     connection.prepare("CREATE INDEX IF NOT EXISTS `index_discovered_items_lastSeenAtEpochMillis` ON `discovered_items` (`lastSeenAtEpochMillis`)")
         .use { it.step() }
 
-    connection.prepare("ALTER TABLE `inbox_origins` ADD COLUMN `resolvedUrl` TEXT").use { it.step() }
+    // Inbox provenance is snapshotted when ingestion attaches the origin. Existing v3 rows are backfilled now.
+    connection.prepare("ALTER TABLE `inbox_origins` RENAME TO `inbox_origins_v3`").use { it.step() }
+    connection.prepare(
+        """
+        CREATE TABLE `inbox_origins` (
+            `inboxItemId` TEXT NOT NULL,
+            `discoveredItemId` TEXT NOT NULL,
+            `sourceId` TEXT NOT NULL,
+            `discoveredUrl` TEXT NOT NULL,
+            `resolvedUrl` TEXT,
+            `canonicalUrl` TEXT NOT NULL,
+            `discoveredAtEpochMillis` INTEGER NOT NULL,
+            `fetchedAtEpochMillis` INTEGER NOT NULL,
+            `sourceNameSnapshot` TEXT NOT NULL,
+            `sourceUrlSnapshot` TEXT NOT NULL,
+            `sourceTypeSnapshot` TEXT NOT NULL,
+            PRIMARY KEY(`inboxItemId`, `discoveredItemId`),
+            FOREIGN KEY(`inboxItemId`) REFERENCES `inbox_items`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+            FOREIGN KEY(`sourceId`) REFERENCES `sources`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare(
+        """
+        INSERT INTO `inbox_origins` (
+            `inboxItemId`, `discoveredItemId`, `sourceId`, `discoveredUrl`, `resolvedUrl`, `canonicalUrl`,
+            `discoveredAtEpochMillis`, `fetchedAtEpochMillis`,
+            `sourceNameSnapshot`, `sourceUrlSnapshot`, `sourceTypeSnapshot`
+        )
+        SELECT i.`inboxItemId`, i.`discoveredItemId`, i.`sourceId`, i.`discoveredUrl`, NULL, i.`canonicalUrl`,
+               i.`discoveredAtEpochMillis`, i.`fetchedAtEpochMillis`,
+               s.`name`, s.`url`, s.`type`
+        FROM `inbox_origins_v3` i
+        JOIN `sources` s ON s.`id` = i.`sourceId`
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare("DROP TABLE `inbox_origins_v3`").use { it.step() }
+    connection.prepare("CREATE UNIQUE INDEX IF NOT EXISTS `index_inbox_origins_discoveredItemId` ON `inbox_origins` (`discoveredItemId`)")
+        .use { it.step() }
+    connection.prepare("CREATE INDEX IF NOT EXISTS `index_inbox_origins_sourceId` ON `inbox_origins` (`sourceId`)")
+        .use { it.step() }
 
     // Saved provenance is a durable snapshot. Removing a subscription must not delete it.
     connection.prepare("ALTER TABLE `document_provenance` RENAME TO `document_provenance_v3`").use { it.step() }
