@@ -1,5 +1,6 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
+import androidx.room3.ColumnInfo
 import androidx.room3.Entity
 import androidx.room3.ForeignKey
 import androidx.room3.Index
@@ -68,7 +69,7 @@ data class DiscoveredItemEntity(
     val contentHash: String?,
     val status: String,
     val relevanceScore: Double?,
-    val processingAttempts: Int,
+    @ColumnInfo(defaultValue = "0") val processingAttempts: Int,
     val nextProcessingAtEpochMillis: Long?,
     val lastProcessingError: String?,
 )
