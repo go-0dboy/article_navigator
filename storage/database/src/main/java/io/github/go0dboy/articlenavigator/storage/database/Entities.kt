@@ -78,7 +78,45 @@ data class RawContentEntity(
     val expiresAtEpochMillis: Long?,
 )
 
-@Entity(tableName = "documents", indices = [Index(value = ["canonicalUrl"], unique = true)])
+@Entity(
+    tableName = "inbox_items",
+    indices = [
+        Index(value = ["canonicalUrl"], unique = true),
+        Index("contentHash"),
+        Index("createdAtEpochMillis"),
+    ],
+)
+data class InboxItemEntity(
+    @PrimaryKey val id: String,
+    val canonicalUrl: String,
+    val title: String,
+    val publishedAtEpochMillis: Long?,
+    val normalizedText: String,
+    val contentHash: String,
+    val createdAtEpochMillis: Long,
+    val updatedAtEpochMillis: Long,
+)
+
+@Entity(
+    tableName = "inbox_origins",
+    primaryKeys = ["inboxItemId", "discoveredItemId"],
+    foreignKeys = [
+        ForeignKey(entity = InboxItemEntity::class, parentColumns = ["id"], childColumns = ["inboxItemId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE),
+    ],
+    indices = [Index(value = ["discoveredItemId"], unique = true), Index("sourceId")],
+)
+data class InboxOriginEntity(
+    val inboxItemId: String,
+    val discoveredItemId: String,
+    val sourceId: String,
+    val discoveredUrl: String,
+    val canonicalUrl: String,
+    val discoveredAtEpochMillis: Long,
+    val fetchedAtEpochMillis: Long,
+)
+
+@Entity(tableName = "documents", indices = [Index(value = ["canonicalUrl"], unique = true), Index("contentHash")])
 data class DocumentEntity(
     @PrimaryKey val id: String,
     val canonicalUrl: String,
