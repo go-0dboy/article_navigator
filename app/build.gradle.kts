@@ -39,6 +39,8 @@ dependencies {
     implementation(project(":scheduler:core"))
     implementation(project(":scheduler:android"))
     implementation(project(":storage:database"))
+    implementation(project(":feature:sources"))
+    implementation(project(":feature:inbox"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
