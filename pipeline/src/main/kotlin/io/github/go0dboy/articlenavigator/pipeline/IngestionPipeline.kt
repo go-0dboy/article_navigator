@@ -19,6 +19,8 @@ import java.security.MessageDigest
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
 
@@ -93,7 +95,12 @@ class IngestionPipeline(
             if (fetched.statusCode !in 200..299) {
                 val error = IllegalStateException("Article request returned HTTP ${fetched.statusCode}")
                 return if (isRetryableHttpStatus(fetched.statusCode)) {
-                    fail(item, now, error)
+                    fail(
+                        item = item,
+                        now = now,
+                        error = error,
+                        minimumDelay = parseRetryAfter(fetched.retryAfterHeader(), now),
+                    )
                 } else {
                     skip(item, canonicalUrl, error.message ?: "HTTP ${fetched.statusCode}")
                 }
@@ -213,10 +220,16 @@ class IngestionPipeline(
         }
     }
 
-    private suspend fun fail(item: DiscoveredItem, now: Instant, error: Exception): Outcome {
+    private suspend fun fail(
+        item: DiscoveredItem,
+        now: Instant,
+        error: Exception,
+        minimumDelay: Duration? = null,
+    ): Outcome {
         val attempts = item.processingAttempts + 1
         val multiplier = 1L shl min(attempts - 1, 10)
-        val delay = retryBaseDelay.multipliedBy(multiplier).coerceAtMost(retryMaxDelay)
+        val localDelay = retryBaseDelay.multipliedBy(multiplier).coerceAtMost(retryMaxDelay)
+        val delay = minimumDelay?.takeIf { it > localDelay } ?: localDelay
         check(
             ingestionRepository.markFailed(
                 id = item.id,
@@ -238,6 +251,20 @@ class IngestionPipeline(
 
     private fun isRetryableHttpStatus(statusCode: Int): Boolean =
         statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+
+    private fun io.github.go0dboy.articlenavigator.collector.api.FetchResult.retryAfterHeader(): String? =
+        fetchedHeaders.entries.firstOrNull { (name, _) -> name.equals("Retry-After", ignoreCase = true) }?.value
+
+    private fun parseRetryAfter(value: String?, now: Instant): Duration? {
+        if (value.isNullOrBlank()) return null
+        value.trim().toLongOrNull()?.let { seconds ->
+            if (seconds >= 0) return Duration.ofSeconds(seconds)
+        }
+        val retryAt = runCatching {
+            ZonedDateTime.parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
+        }.getOrNull() ?: return null
+        return Duration.between(now, retryAt).takeUnless { it.isNegative }
+    }
 
     private fun errorDescription(error: Exception): String =
         (error.message ?: error::class.java.simpleName).take(500)
