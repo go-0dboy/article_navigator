@@ -44,6 +44,8 @@ dependencies {
 
     ksp(libs.androidx.room3.compiler)
 
+    testImplementation(project(":scheduler:core"))
+    testImplementation(project(":collector:api"))
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.room3.testing)
