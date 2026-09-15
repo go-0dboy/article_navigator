@@ -43,8 +43,18 @@ interface IngestionRepository {
 }
 
 interface InboxRepository {
+    /**
+     * Atomically stages a fetched item in Inbox and commits its discovery origin:
+     * the referenced discovery becomes PROCESSED and its temporary raw payload is removed.
+     */
     suspend fun put(item: InboxItem, origin: InboxOrigin)
+
+    /**
+     * Atomically attaches another origin to an existing Inbox item and commits that discovery
+     * with the same PROCESSED/raw-cleanup semantics as [put].
+     */
     suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin)
+
     suspend fun listPending(limit: Int = 100): List<InboxItem>
     suspend fun findById(id: InboxItemId): InboxItem?
     suspend fun findByCanonicalUrl(canonicalUrl: String): InboxItem?
