@@ -3,9 +3,9 @@ agp = "9.4.0"
 kotlin = "2.4.20"
 ksp = "2.3.12"
 room3 = "3.0.3"
-composeBom = "2026.08.00"
-activityCompose = "1.13.0"
-coreKtx = "1.19.0"
+composeBom = "2026.03.00"
+activityCompose = "1.12.4"
+coreKtx = "1.17.0"
 junit = "4.13.2"
 
 [libraries]
