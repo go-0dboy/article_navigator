@@ -32,7 +32,7 @@ jobs:
         run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
 
       - name: Set up Gradle cache and validate wrapper
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Verify committed Gradle Wrapper integrity
         run: |
