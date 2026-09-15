@@ -8,7 +8,6 @@ import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
-import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
 import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
@@ -72,25 +71,20 @@ class IngestionPipeline(
     private suspend fun processOne(item: DiscoveredItem, now: Instant): Outcome {
         val canonicalUrl = item.canonicalUrl
             ?: UrlCanonicalizer.canonicalize(item.url)
-            ?: return skip(item, "Invalid article URL: ${item.url}")
+            ?: return skip(item, null, "Invalid article URL: ${item.url}")
         val canonicalHash = sha256(canonicalUrl)
 
         val previousDisposition = knowledgeRepository.findSeen(canonicalHash, item.sourceId)
         if (previousDisposition != null) {
-            ingestionRepository.upsertDiscovered(
-                item.copy(
-                    canonicalUrl = canonicalUrl,
-                    status = DiscoveryStatus.PROCESSED,
-                    nextProcessingAt = null,
-                    lastProcessingError = null,
-                ),
-            )
+            check(ingestionRepository.markProcessed(item.id, canonicalUrl)) {
+                "Discovery disappeared while marking processed: ${item.id.value}"
+            }
             ingestionRepository.deleteRawContent(item.id)
             return Outcome.KNOWN
         }
 
         val source = sourceRepository.findById(item.sourceId)
-            ?: return skip(item, "Source ${item.sourceId.value} no longer exists")
+            ?: return skip(item, canonicalUrl, "Source ${item.sourceId.value} no longer exists")
         val adapter = adapterResolver.resolve(source)
             ?: return fail(item, now, IllegalStateException("No adapter ${source.adapterType} for ${source.type}"))
 
@@ -101,7 +95,7 @@ class IngestionPipeline(
                 return if (isRetryableHttpStatus(fetched.statusCode)) {
                     fail(item, now, error)
                 } else {
-                    skip(item, error.message ?: "HTTP ${fetched.statusCode}")
+                    skip(item, canonicalUrl, error.message ?: "HTTP ${fetched.statusCode}")
                 }
             }
 
@@ -121,21 +115,20 @@ class IngestionPipeline(
             val extracted = try {
                 extractor.extract(fetched.body, fetched.contentType, extractionBaseUrl)
             } catch (error: UnsupportedContentTypeException) {
-                return skip(item, error.message ?: "Unsupported content type")
+                return skip(item, canonicalUrl, error.message ?: "Unsupported content type")
             } catch (error: IllegalArgumentException) {
-                return skip(item, error.message ?: "Content cannot be extracted")
+                return skip(item, canonicalUrl, error.message ?: "Content cannot be extracted")
             }
 
             val contentHash = sha256(extracted.normalizedText)
-            val fetchedItem = item.copy(
-                canonicalUrl = canonicalUrl,
-                resolvedUrl = fetched.resolvedUrl ?: item.resolvedUrl,
-                contentHash = contentHash,
-                status = DiscoveryStatus.FETCHED,
-                nextProcessingAt = null,
-                lastProcessingError = null,
-            )
-            ingestionRepository.upsertDiscovered(fetchedItem)
+            check(
+                ingestionRepository.markFetched(
+                    id = item.id,
+                    canonicalUrl = canonicalUrl,
+                    resolvedUrl = fetched.resolvedUrl ?: item.resolvedUrl,
+                    contentHash = contentHash,
+                ),
+            ) { "Discovery disappeared while marking fetched: ${item.id.value}" }
 
             val title = extracted.title?.takeIf { it.isNotBlank() }
                 ?: item.title?.takeIf { it.isNotBlank() }
@@ -224,25 +217,21 @@ class IngestionPipeline(
         val attempts = item.processingAttempts + 1
         val multiplier = 1L shl min(attempts - 1, 10)
         val delay = retryBaseDelay.multipliedBy(multiplier).coerceAtMost(retryMaxDelay)
-        ingestionRepository.upsertDiscovered(
-            item.copy(
-                status = DiscoveryStatus.FAILED,
+        check(
+            ingestionRepository.markFailed(
+                id = item.id,
                 processingAttempts = attempts,
                 nextProcessingAt = now.plus(delay),
                 lastProcessingError = errorDescription(error),
             ),
-        )
+        ) { "Discovery disappeared while marking failed: ${item.id.value}" }
         return Outcome.FAILED
     }
 
-    private suspend fun skip(item: DiscoveredItem, reason: String): Outcome {
-        ingestionRepository.upsertDiscovered(
-            item.copy(
-                status = DiscoveryStatus.SKIPPED,
-                nextProcessingAt = null,
-                lastProcessingError = reason.take(500),
-            ),
-        )
+    private suspend fun skip(item: DiscoveredItem, canonicalUrl: String?, reason: String): Outcome {
+        check(ingestionRepository.markSkipped(item.id, canonicalUrl, reason.take(500))) {
+            "Discovery disappeared while marking skipped: ${item.id.value}"
+        }
         ingestionRepository.deleteRawContent(item.id)
         return Outcome.SKIPPED
     }
