@@ -38,6 +38,27 @@ data class RawContent(
     val expiresAt: Instant?,
 )
 
+data class InboxItem(
+    val id: InboxItemId,
+    val canonicalUrl: String,
+    val title: String,
+    val publishedAt: Instant? = null,
+    val normalizedText: String,
+    val contentHash: String,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+)
+
+data class InboxOrigin(
+    val inboxItemId: InboxItemId,
+    val discoveredItemId: DiscoveredItemId,
+    val sourceId: SourceId,
+    val discoveredUrl: String,
+    val canonicalUrl: String,
+    val discoveredAt: Instant,
+    val fetchedAt: Instant,
+)
+
 data class Document(
     val id: DocumentId,
     val canonicalUrl: String,
