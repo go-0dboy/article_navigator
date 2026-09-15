@@ -3,6 +3,7 @@ package io.github.go0dboy.articlenavigator.collector.rss
 import io.github.go0dboy.articlenavigator.collector.api.DiscoveryResult
 import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
+import io.github.go0dboy.articlenavigator.collector.api.SourceCollectionException
 import io.github.go0dboy.articlenavigator.collector.api.UrlCanonicalizer
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
@@ -242,9 +243,18 @@ class RssAtomSourceAdapter(
 class FeedHttpException(
     url: String,
     val statusCode: Int,
-    val retryAfter: Duration? = null,
-) : RuntimeException("Feed request failed with HTTP $statusCode: $url") {
-    val isTransient: Boolean = statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+    retryAfter: Duration? = null,
+) : SourceCollectionException(
+    message = "Feed request failed with HTTP $statusCode: $url",
+    retryable = isTransientHttpStatus(statusCode),
+    retryAfter = retryAfter,
+) {
+    val isTransient: Boolean get() = isTransientHttpStatus(statusCode)
+
+    companion object {
+        private fun isTransientHttpStatus(statusCode: Int): Boolean =
+            statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+    }
 }
 
 class FeedParseException(
