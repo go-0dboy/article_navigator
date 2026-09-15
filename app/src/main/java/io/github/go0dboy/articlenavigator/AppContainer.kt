@@ -73,7 +73,7 @@ class AppContainer(
         adapterResolver = SourceAdapterResolver(adapterRegistry::resolve),
     )
 
-    private val inboxService = InboxService(inboxRepository, sourceRepository)
+    private val inboxService = InboxService(inboxRepository)
 
     override suspend fun runCollection(isUnmeteredNetwork: Boolean): CollectionRunReport {
         val diagnosticWasEnabled = sourceRepository.findById(SAMPLE_SOURCE_ID)?.enabled == true
