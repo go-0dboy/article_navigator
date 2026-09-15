@@ -31,8 +31,12 @@ val MIGRATION_2_3 = Migration(2, 3) { connection ->
 
     // Phase 3 had no Inbox or content-ingestion stage. Its bundled device-test
     // source produced diagnostic discovery rows only; do not unexpectedly ingest
-    // those historical diagnostics after an in-place upgrade to Phase 4.
+    // those historical diagnostics after an in-place upgrade to Phase 4. The
+    // source itself is also disabled so normal background collection does not keep
+    // producing test data. Diagnostics can explicitly enable it again when needed.
     connection.prepare("UPDATE `discovered_items` SET `status` = 'PROCESSED' WHERE `sourceId` = 'phase3-sample-rss'")
+        .use { it.step() }
+    connection.prepare("UPDATE `sources` SET `enabled` = 0 WHERE `id` = 'phase3-sample-rss'")
         .use { it.step() }
 
     connection.prepare(
