@@ -7,6 +7,7 @@ enum class DiscoveryStatus {
     FETCHED,
     PROCESSED,
     FAILED,
+    SKIPPED,
 }
 
 enum class ContentDisposition {
