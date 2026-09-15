@@ -44,16 +44,19 @@ Acceptance criteria:
 Automated evidence:
 - `CollectionHardeningIntegrationTest.userSourceEditsInvalidateInFlightCollectorWithoutBeingReverted`
 
-## 4. DiscoveredItem race safety
+## 4. DiscoveredItem race and interruption safety
 
 Acceptance criteria:
 - repeat sightings do not overwrite ingestion-owned processing status, content hash, attempts, retry schedule, or processing error;
 - first discovery time is immutable;
 - last seen time advances on repeat discovery;
-- concurrency-sensitive scheduler writes are targeted SQL operations rather than read/merge/full-upsert.
+- concurrency-sensitive scheduler writes are targeted SQL operations rather than read/merge/full-upsert;
+- if the process is interrupted after article fetch has persisted `FETCHED` but before the terminal Inbox/Knowledge transaction, that item becomes eligible for processing again after restart;
+- terminal `PROCESSED` and `SKIPPED` rows are not returned to the ready queue.
 
 Automated evidence:
 - `CollectionHardeningIntegrationTest.repeatedSightingPreservesNewerIngestionStateAndFirstDiscoveryTime`
+- `IngestionCrashRecoveryIntegrationTest.fetchedStateIsRecoverableAfterInterruptedIngestion`
 
 ## 5. HTTP cancellation
 
@@ -61,7 +64,8 @@ Acceptance criteria:
 - cancelling the coroutine cancels the underlying OkHttp Call;
 - cancellation propagates as `CancellationException`;
 - a slow response body is not fully consumed after cancellation;
-- collection cancellation is not recorded as an ordinary Source failure and the owned lease is released best-effort.
+- collection cancellation is not recorded as an ordinary Source failure and the owned lease is released best-effort;
+- the cancellation regression test itself is bounded and cannot deadlock before the HTTP call starts.
 
 Automated evidence:
 - `OkHttpTransportTest.cancellingCoroutineCancelsOkHttpCallAndStopsBodyRead`
@@ -127,12 +131,17 @@ Automated evidence:
 
 Acceptance criteria:
 - every saved Document retains discovery provenance;
-- provenance includes immutable Source snapshots needed to explain origin even after later Source edits;
-- Source archive/disable does not change saved provenance;
-- physical Source deletion is rejected while durable provenance/seen-history references exist;
-- migration 3→4 backfills provenance snapshots without silent loss.
+- Source name/URL/type are snapshotted when a discovery is attached to Inbox, not when the user later presses Save;
+- Save copies the Inbox snapshot and does not re-read mutable Source metadata;
+- Source edits after Inbox attachment do not rewrite historical provenance;
+- Source archive/disable does not change pending or saved provenance;
+- physical Source deletion is rejected while pending Inbox provenance, saved Document provenance, or retained seen-history references exist;
+- migration 3→4 backfills Inbox and Document provenance snapshots without silent loss.
 
 Automated evidence:
+- `InboxServiceTest.save preserves every ingestion-time origin snapshot and creates saved fingerprints`
+- `InboxProvenancePersistenceTest.sourceEditsAfterInboxAttachmentDoNotRewriteOriginSnapshot`
+- `InboxOriginMigrationTest.migration3To4BackfillsInboxSourceSnapshotAndRestrictsSourceDelete`
 - `CollectionHardeningIntegrationTest.archivedSourceDoesNotChangeSavedProvenanceSnapshot`
 - `MigrationHardeningTest.migration3To4PreservesOperationalInboxKnowledgeAndProvenanceData`
 - `MigrationHardeningTest.migration1To2To3To4PreservesDataAcrossFullSupportedChain`
@@ -143,11 +152,14 @@ Acceptance criteria:
 - 3→4 succeeds with data preserved;
 - 1→2→3→4 succeeds with data preserved;
 - seeded coverage includes Sources, cursors, collection state, discovered items, Inbox, Documents, versions, provenance and seen history;
-- critical indexes and foreign-key delete policies are verified.
+- v3 pending Inbox origins gain source snapshots during migration;
+- critical indexes and foreign-key delete policies are verified;
+- the committed Room v4 schema is the generated schema and matches migration/entity semantics.
 
 Automated evidence:
 - `MigrationHardeningTest.migration3To4PreservesOperationalInboxKnowledgeAndProvenanceData`
 - `MigrationHardeningTest.migration1To2To3To4PreservesDataAcrossFullSupportedChain`
+- `InboxOriginMigrationTest.migration3To4BackfillsInboxSourceSnapshotAndRestrictsSourceDelete`
 - CI Room-schema consistency gate.
 
 ## 11. Reproducible clean checkout
@@ -172,9 +184,9 @@ CI additionally verifies the debug APK signature and application id.
 
 ## Failure-domain policy
 
-Source-local remote/adapter failures are persisted per Source. `CancellationException` is never downgraded to a normal Source failure. Shared database/storage failures remain run-level infrastructure failures and are passed to the Android Worker for bounded WorkManager retry; they are not falsely recorded as remote Source failures.
+Source-local remote/adapter failures are persisted per Source. `CancellationException` is never downgraded to a normal Source failure. A persisted `FETCHED` row is treated as recoverable interrupted work until a terminal transaction marks it `PROCESSED` or `SKIPPED`. Shared database/storage failures remain run-level infrastructure failures and are passed to the Android Worker for bounded WorkManager retry; they are not falsely recorded as remote Source failures.
 
-This is why audit D6 is classified **PARTIALLY FIXED** rather than hiding infrastructure failures behind source-local diagnostics.
+This is why audit D6 remains **PARTIALLY FIXED** rather than hiding infrastructure failures behind source-local diagnostics.
 
 ## Final Definition of Done
 
@@ -184,6 +196,7 @@ PR #15 may leave Draft only when all of the following are true:
 - migration tests are green;
 - concurrency/lease tests are green;
 - cancellation/network-limit/retry tests are green;
+- interruption-recovery and provenance-snapshot tests are green;
 - Android lint is green;
 - `assembleDebug` is green;
 - GitHub Actions for the current head is fully green;
