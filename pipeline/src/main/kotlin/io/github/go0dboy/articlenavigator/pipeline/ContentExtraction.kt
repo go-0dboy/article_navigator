@@ -38,7 +38,6 @@ class DefaultContentExtractor : ContentExtractor {
         val root = document.selectFirst("article")
             ?: document.selectFirst("main")
             ?: document.body()
-            ?: document
 
         val title = document.selectFirst("meta[property=og:title]")
             ?.attr("content")
