@@ -319,7 +319,8 @@ interface IngestionDao {
     @Query("SELECT * FROM discovered_items WHERE sourceId = :sourceId AND url = :url LIMIT 1")
     suspend fun findDiscovered(sourceId: String, url: String): DiscoveredItemEntity?
 
-    @Query("SELECT * FROM discovered_items WHERE status IN ('DISCOVERED', 'FAILED') AND (nextProcessingAtEpochMillis IS NULL OR nextProcessingAtEpochMillis <= :nowEpochMillis) ORDER BY discoveredAtEpochMillis LIMIT :limit")
+    // FETCHED is an interrupted-ingestion recovery state: terminal DB transactions move successful work to PROCESSED.
+    @Query("SELECT * FROM discovered_items WHERE status IN ('DISCOVERED', 'FAILED', 'FETCHED') AND (nextProcessingAtEpochMillis IS NULL OR nextProcessingAtEpochMillis <= :nowEpochMillis) ORDER BY discoveredAtEpochMillis LIMIT :limit")
     suspend fun findReadyForProcessing(nowEpochMillis: Long, limit: Int): List<DiscoveredItemEntity>
 
     @Query("SELECT COUNT(*) FROM discovered_items")
