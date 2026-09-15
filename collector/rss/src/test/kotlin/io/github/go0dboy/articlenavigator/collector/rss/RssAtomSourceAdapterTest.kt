@@ -12,8 +12,12 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -93,25 +97,82 @@ class RssAtomSourceAdapterTest {
     }
 
     @Test
-    fun notModifiedReturnsNoItemsAndPreservesCursor() = runTest {
-        val transport = FakeTransport(
-            HttpResponse(
-                statusCode = 304,
-                headers = emptyMap(),
-                contentType = null,
-                body = ByteArray(0),
-                finalUrl = "https://example.com/feed.xml",
-            ),
-        )
+    fun notModifiedWithoutValidatorsPreservesPreviousValidators() = runTest {
+        val transport = FakeTransport(response(304))
         val source = source(SourceType.RSS, "https://example.com/feed.xml")
-        val cursor = SourceCursor(source.id, etag = "\"v1\"", lastGuid = "old-guid")
+        val cursor = SourceCursor(
+            source.id,
+            etag = "\"v1\"",
+            lastModified = "Mon, 14 Sep 2026 09:00:00 GMT",
+            lastGuid = "old-guid",
+        )
 
         val result = RssAtomSourceAdapter(transport, clock).discover(source, cursor)
 
         assertTrue(result.items.isEmpty())
         assertEquals("\"v1\"", result.nextCursor.etag)
+        assertEquals("Mon, 14 Sep 2026 09:00:00 GMT", result.nextCursor.lastModified)
         assertEquals("old-guid", result.nextCursor.lastGuid)
         assertEquals(now, result.nextCursor.lastCheckedAt)
+    }
+
+    @Test
+    fun successfulResponseWithoutValidatorsClearsPreviousValidators() = runTest {
+        val transport = FakeTransport(response(200, body = RSS_FIXTURE.toByteArray()))
+        val source = source(SourceType.RSS, "https://example.com/feed.xml")
+        val cursor = SourceCursor(
+            source.id,
+            etag = "\"stale\"",
+            lastModified = "Mon, 14 Sep 2026 09:00:00 GMT",
+        )
+
+        val result = RssAtomSourceAdapter(transport, clock).discover(source, cursor)
+
+        assertNull(result.nextCursor.etag)
+        assertNull(result.nextCursor.lastModified)
+    }
+
+    @Test
+    fun retryAfterSecondsIsExposedFor429And503() = runTest {
+        listOf(429 to 120L, 503 to 45L).forEach { (status, seconds) ->
+            val error = feedError(response(status, mapOf("Retry-After" to listOf(seconds.toString()))))
+            assertEquals(status, error.statusCode)
+            assertTrue(error.retryable)
+            assertTrue(error.isTransient)
+            assertEquals(Duration.ofSeconds(seconds), error.retryAfter)
+        }
+    }
+
+    @Test
+    fun retryAfterHttpDateIsParsed() = runTest {
+        val retryAt = ZonedDateTime.ofInstant(now.plusSeconds(180), ZoneOffset.UTC)
+            .format(DateTimeFormatter.RFC_1123_DATE_TIME)
+
+        val error = feedError(response(503, mapOf("Retry-After" to listOf(retryAt))))
+
+        assertEquals(Duration.ofSeconds(180), error.retryAfter)
+        assertTrue(error.retryable)
+    }
+
+    @Test
+    fun pastOrInvalidRetryAfterIsIgnored() = runTest {
+        val past = ZonedDateTime.ofInstant(now.minusSeconds(60), ZoneOffset.UTC)
+            .format(DateTimeFormatter.RFC_1123_DATE_TIME)
+
+        assertNull(feedError(response(503, mapOf("Retry-After" to listOf(past)))).retryAfter)
+        assertNull(feedError(response(503, mapOf("Retry-After" to listOf("not-a-date")))).retryAfter)
+    }
+
+    @Test
+    fun permanentHttpErrorsAreNotRetryableButServerErrorsAre() = runTest {
+        listOf(401, 403, 404).forEach { status ->
+            val error = feedError(response(status))
+            assertFalse(error.retryable)
+            assertFalse(error.isTransient)
+        }
+        val serverError = feedError(response(500))
+        assertTrue(serverError.retryable)
+        assertTrue(serverError.isTransient)
     }
 
     @Test(expected = FeedParseException::class)
@@ -130,6 +191,28 @@ class RssAtomSourceAdapterTest {
             null,
         )
     }
+
+    private suspend fun feedError(response: HttpResponse): FeedHttpException {
+        val adapter = RssAtomSourceAdapter(FakeTransport(response), clock)
+        return try {
+            adapter.discover(source(SourceType.RSS, "https://example.com/feed.xml"), null)
+            error("Expected FeedHttpException")
+        } catch (error: FeedHttpException) {
+            error
+        }
+    }
+
+    private fun response(
+        statusCode: Int,
+        headers: Map<String, List<String>> = emptyMap(),
+        body: ByteArray = ByteArray(0),
+    ) = HttpResponse(
+        statusCode = statusCode,
+        headers = headers,
+        contentType = "application/rss+xml",
+        body = body,
+        finalUrl = "https://example.com/feed.xml",
+    )
 
     private fun source(type: SourceType, url: String): Source = Source(
         id = SourceId("source-1"),
