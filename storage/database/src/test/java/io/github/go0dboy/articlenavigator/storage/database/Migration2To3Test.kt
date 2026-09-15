@@ -55,6 +55,15 @@ class Migration2To3Test {
                 assertEquals("PROCESSED", statement.getText(0))
                 assertEquals(0L, statement.getLong(1))
             }
+
+            connection.prepare("SELECT enabled FROM sources WHERE id = 'phase3-sample-rss'").use { statement ->
+                assertTrue(statement.step())
+                assertEquals(0L, statement.getLong(0))
+            }
+            connection.prepare("SELECT enabled FROM sources WHERE id = 'source-1'").use { statement ->
+                assertTrue(statement.step())
+                assertEquals(1L, statement.getLong(0))
+            }
         } finally {
             connection.close()
             Files.deleteIfExists(file)
