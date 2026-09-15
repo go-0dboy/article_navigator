@@ -39,6 +39,23 @@ jobs:
       - name: Unit tests
         run: gradle test --stacktrace
 
+      - name: Verify Room schema is committed
+        run: |
+          changes="$(git status --porcelain -- storage/database/schemas)"
+          if [ -n "$changes" ]; then
+            echo "Room schema changed or is untracked. Commit the generated schema before merging."
+            echo "$changes"
+            exit 1
+          fi
+
+      - name: Upload Room schemas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: room-schemas
+          path: storage/database/schemas
+          if-no-files-found: warn
+
       - name: Android lint
         run: gradle lint --stacktrace
 

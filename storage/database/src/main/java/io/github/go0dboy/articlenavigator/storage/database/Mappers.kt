@@ -1,0 +1,108 @@
+package io.github.go0dboy.articlenavigator.storage.database
+
+import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
+import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
+import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
+import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
+import io.github.go0dboy.articlenavigator.core.model.Document
+import io.github.go0dboy.articlenavigator.core.model.DocumentId
+import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
+import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
+import io.github.go0dboy.articlenavigator.core.model.PollPolicy
+import io.github.go0dboy.articlenavigator.core.model.RawContent
+import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
+import io.github.go0dboy.articlenavigator.core.model.Source
+import io.github.go0dboy.articlenavigator.core.model.SourceCursor
+import io.github.go0dboy.articlenavigator.core.model.SourceId
+import io.github.go0dboy.articlenavigator.core.model.SourceType
+import java.time.Duration
+import java.time.Instant
+
+internal fun Source.toEntity() = SourceEntity(
+    id = id.value,
+    name = name,
+    type = type.name,
+    url = url,
+    enabled = enabled,
+    pollIntervalSeconds = pollPolicy.interval.seconds,
+    requiresUnmeteredNetwork = pollPolicy.requiresUnmeteredNetwork,
+    adapterType = adapterType,
+    configurationJson = configurationJson,
+    createdAtEpochMillis = createdAt.toEpochMilli(),
+    lastSuccessfulCheckAtEpochMillis = lastSuccessfulCheckAt?.toEpochMilli(),
+    nextCheckAtEpochMillis = nextCheckAt?.toEpochMilli(),
+)
+
+internal fun SourceEntity.toDomain() = Source(
+    id = SourceId(id),
+    name = name,
+    type = SourceType.valueOf(type),
+    url = url,
+    enabled = enabled,
+    pollPolicy = PollPolicy(Duration.ofSeconds(pollIntervalSeconds), requiresUnmeteredNetwork),
+    adapterType = adapterType,
+    configurationJson = configurationJson,
+    createdAt = Instant.ofEpochMilli(createdAtEpochMillis),
+    lastSuccessfulCheckAt = lastSuccessfulCheckAtEpochMillis?.let(Instant::ofEpochMilli),
+    nextCheckAt = nextCheckAtEpochMillis?.let(Instant::ofEpochMilli),
+)
+
+internal fun SourceCursor.toEntity() = SourceCursorEntity(
+    sourceId.value, etag, lastModified, opaqueCursor, lastGuid, lastCheckedAt?.toEpochMilli(),
+)
+
+internal fun SourceCursorEntity.toDomain() = SourceCursor(
+    SourceId(sourceId), etag, lastModified, opaqueCursor, lastGuid, lastCheckedAtEpochMillis?.let(Instant::ofEpochMilli),
+)
+
+internal fun DiscoveredItem.toEntity() = DiscoveredItemEntity(
+    id.value, sourceId.value, url, canonicalUrl, title, publishedAt?.toEpochMilli(), discoveredAt.toEpochMilli(), contentHash, status.name, relevanceScore,
+)
+
+internal fun DiscoveredItemEntity.toDomain() = DiscoveredItem(
+    DiscoveredItemId(id), SourceId(sourceId), url, canonicalUrl, title, publishedAtEpochMillis?.let(Instant::ofEpochMilli),
+    Instant.ofEpochMilli(discoveredAtEpochMillis), contentHash, DiscoveryStatus.valueOf(status), relevanceScore,
+)
+
+internal fun RawContent.toEntity() = RawContentEntity(
+    discoveredItemId.value, mimeType, payload, fetchedAt.toEpochMilli(), httpStatus, expiresAt?.toEpochMilli(),
+)
+
+internal fun RawContentEntity.toDomain() = RawContent(
+    DiscoveredItemId(discoveredItemId), mimeType, payload, Instant.ofEpochMilli(fetchedAtEpochMillis), httpStatus,
+    expiresAtEpochMillis?.let(Instant::ofEpochMilli),
+)
+
+internal fun Document.toEntity() = DocumentEntity(
+    id.value, canonicalUrl, title, author, publishedAt?.toEpochMilli(), language, normalizedText, contentHash,
+    createdAt.toEpochMilli(), updatedAt.toEpochMilli(), disposition.name,
+)
+
+internal fun DocumentEntity.toDomain() = Document(
+    DocumentId(id), canonicalUrl, title, author, publishedAtEpochMillis?.let(Instant::ofEpochMilli), language, normalizedText,
+    contentHash, Instant.ofEpochMilli(createdAtEpochMillis), Instant.ofEpochMilli(updatedAtEpochMillis), ContentDisposition.valueOf(disposition),
+)
+
+internal fun DocumentVersion.toEntity() = DocumentVersionEntity(
+    documentId.value, version, contentHash, normalizedText, fetchedAt.toEpochMilli(), parserVersion,
+)
+
+internal fun DocumentVersionEntity.toDomain() = DocumentVersion(
+    DocumentId(documentId), version, contentHash, normalizedText, Instant.ofEpochMilli(fetchedAtEpochMillis), parserVersion,
+)
+
+internal fun DocumentProvenance.toEntity() = DocumentProvenanceEntity(
+    documentId.value, sourceId.value, discoveredUrl, discoveredAt.toEpochMilli(), fetchedAt.toEpochMilli(),
+)
+
+internal fun DocumentProvenanceEntity.toDomain() = DocumentProvenance(
+    DocumentId(documentId), SourceId(sourceId), discoveredUrl, Instant.ofEpochMilli(discoveredAtEpochMillis), Instant.ofEpochMilli(fetchedAtEpochMillis),
+)
+
+internal fun SeenFingerprint.toEntity() = SeenFingerprintEntity(
+    canonicalUrlHash, contentHash, sourceId.value, seenAt.toEpochMilli(), disposition.name,
+)
+
+internal fun SeenFingerprintEntity.toDomain() = SeenFingerprint(
+    canonicalUrlHash, contentHash, SourceId(sourceId), Instant.ofEpochMilli(seenAtEpochMillis), ContentDisposition.valueOf(disposition),
+)

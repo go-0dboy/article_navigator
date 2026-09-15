@@ -1,9 +1,11 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
 import androidx.room3.Entity
+import androidx.room3.ForeignKey
+import androidx.room3.Index
 import androidx.room3.PrimaryKey
 
-@Entity(tableName = "sources")
+@Entity(tableName = "sources", indices = [Index("nextCheckAtEpochMillis")])
 data class SourceEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -19,7 +21,10 @@ data class SourceEntity(
     val nextCheckAtEpochMillis: Long?,
 )
 
-@Entity(tableName = "source_cursors")
+@Entity(
+    tableName = "source_cursors",
+    foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
+)
 data class SourceCursorEntity(
     @PrimaryKey val sourceId: String,
     val etag: String?,
@@ -29,10 +34,40 @@ data class SourceCursorEntity(
     val lastCheckedAtEpochMillis: Long?,
 )
 
-@Entity(tableName = "documents")
-data class DocumentEntity(
+@Entity(
+    tableName = "discovered_items",
+    foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("sourceId"), Index(value = ["sourceId", "url"], unique = true), Index("status")],
+)
+data class DiscoveredItemEntity(
     @PrimaryKey val id: String,
     val sourceId: String,
+    val url: String,
+    val canonicalUrl: String?,
+    val title: String?,
+    val publishedAtEpochMillis: Long?,
+    val discoveredAtEpochMillis: Long,
+    val contentHash: String?,
+    val status: String,
+    val relevanceScore: Double?,
+)
+
+@Entity(
+    tableName = "raw_contents",
+    foreignKeys = [ForeignKey(entity = DiscoveredItemEntity::class, parentColumns = ["id"], childColumns = ["discoveredItemId"], onDelete = ForeignKey.CASCADE)],
+)
+data class RawContentEntity(
+    @PrimaryKey val discoveredItemId: String,
+    val mimeType: String?,
+    val payload: String,
+    val fetchedAtEpochMillis: Long,
+    val httpStatus: Int,
+    val expiresAtEpochMillis: Long?,
+)
+
+@Entity(tableName = "documents", indices = [Index(value = ["canonicalUrl"], unique = true)])
+data class DocumentEntity(
+    @PrimaryKey val id: String,
     val canonicalUrl: String,
     val title: String,
     val author: String?,
@@ -48,6 +83,8 @@ data class DocumentEntity(
 @Entity(
     tableName = "document_versions",
     primaryKeys = ["documentId", "version"],
+    foreignKeys = [ForeignKey(entity = DocumentEntity::class, parentColumns = ["id"], childColumns = ["documentId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("documentId")],
 )
 data class DocumentVersionEntity(
     val documentId: String,
@@ -59,8 +96,27 @@ data class DocumentVersionEntity(
 )
 
 @Entity(
+    tableName = "document_provenance",
+    primaryKeys = ["documentId", "sourceId"],
+    foreignKeys = [
+        ForeignKey(entity = DocumentEntity::class, parentColumns = ["id"], childColumns = ["documentId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE),
+    ],
+    indices = [Index("sourceId")],
+)
+data class DocumentProvenanceEntity(
+    val documentId: String,
+    val sourceId: String,
+    val discoveredUrl: String,
+    val discoveredAtEpochMillis: Long,
+    val fetchedAtEpochMillis: Long,
+)
+
+@Entity(
     tableName = "seen_fingerprints",
     primaryKeys = ["canonicalUrlHash", "sourceId"],
+    foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("sourceId")],
 )
 data class SeenFingerprintEntity(
     val canonicalUrlHash: String,

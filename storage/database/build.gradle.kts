@@ -24,6 +24,14 @@ room3 {
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:data"))
     implementation(libs.androidx.room3.runtime)
+    implementation(libs.androidx.sqlite.bundled)
+    implementation(libs.kotlinx.coroutines.core)
+
     ksp(libs.androidx.room3.compiler)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.room3.testing)
 }

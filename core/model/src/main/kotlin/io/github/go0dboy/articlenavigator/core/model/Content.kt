@@ -29,9 +29,17 @@ data class DiscoveredItem(
     val relevanceScore: Double? = null,
 )
 
+data class RawContent(
+    val discoveredItemId: DiscoveredItemId,
+    val mimeType: String?,
+    val payload: String,
+    val fetchedAt: Instant,
+    val httpStatus: Int,
+    val expiresAt: Instant?,
+)
+
 data class Document(
     val id: DocumentId,
-    val sourceId: SourceId,
     val canonicalUrl: String,
     val title: String,
     val author: String? = null,
@@ -51,6 +59,14 @@ data class DocumentVersion(
     val normalizedText: String,
     val fetchedAt: Instant,
     val parserVersion: String,
+)
+
+data class DocumentProvenance(
+    val documentId: DocumentId,
+    val sourceId: SourceId,
+    val discoveredUrl: String,
+    val discoveredAt: Instant,
+    val fetchedAt: Instant,
 )
 
 data class SeenFingerprint(
