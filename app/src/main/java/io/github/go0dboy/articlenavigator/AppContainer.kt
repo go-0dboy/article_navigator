@@ -178,7 +178,7 @@ class AppContainer(
     companion object {
         val SAMPLE_SOURCE_ID = SourceId("phase3-sample-rss")
         const val SAMPLE_FEED_URL =
-            "https://raw.githubusercontent.com/go-0dboy/article_navigator/main/docs/device-test-feed.xml"
+            "https://raw.githubusercontent.com/go-0dboy/article_navigator/ce7432a3bb6bfec6aa3ce264c89f6add49484379/docs/device-test-feed.xml"
     }
 }
 
