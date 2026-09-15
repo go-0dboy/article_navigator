@@ -149,25 +149,31 @@ internal fun InboxItemEntity.toDomain() = InboxItem(
 )
 
 internal fun InboxOrigin.toEntity() = InboxOriginEntity(
-    inboxItemId.value,
-    discoveredItemId.value,
-    sourceId.value,
-    discoveredUrl,
-    resolvedUrl,
-    canonicalUrl,
-    discoveredAt.toEpochMilli(),
-    fetchedAt.toEpochMilli(),
+    inboxItemId = inboxItemId.value,
+    discoveredItemId = discoveredItemId.value,
+    sourceId = sourceId.value,
+    discoveredUrl = discoveredUrl,
+    resolvedUrl = resolvedUrl,
+    canonicalUrl = canonicalUrl,
+    discoveredAtEpochMillis = discoveredAt.toEpochMilli(),
+    fetchedAtEpochMillis = fetchedAt.toEpochMilli(),
+    sourceNameSnapshot = sourceNameSnapshot,
+    sourceUrlSnapshot = sourceUrlSnapshot,
+    sourceTypeSnapshot = sourceTypeSnapshot,
 )
 
 internal fun InboxOriginEntity.toDomain() = InboxOrigin(
-    InboxItemId(inboxItemId),
-    DiscoveredItemId(discoveredItemId),
-    SourceId(sourceId),
-    discoveredUrl,
-    resolvedUrl,
-    canonicalUrl,
-    Instant.ofEpochMilli(discoveredAtEpochMillis),
-    Instant.ofEpochMilli(fetchedAtEpochMillis),
+    inboxItemId = InboxItemId(inboxItemId),
+    discoveredItemId = DiscoveredItemId(discoveredItemId),
+    sourceId = SourceId(sourceId),
+    discoveredUrl = discoveredUrl,
+    resolvedUrl = resolvedUrl,
+    canonicalUrl = canonicalUrl,
+    discoveredAt = Instant.ofEpochMilli(discoveredAtEpochMillis),
+    fetchedAt = Instant.ofEpochMilli(fetchedAtEpochMillis),
+    sourceNameSnapshot = sourceNameSnapshot,
+    sourceUrlSnapshot = sourceUrlSnapshot,
+    sourceTypeSnapshot = sourceTypeSnapshot,
 )
 
 internal fun Document.toEntity() = DocumentEntity(
