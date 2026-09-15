@@ -20,7 +20,7 @@ class CollectionStatePersistenceTest {
             .setDriver(BundledSQLiteDriver())
             .build()
         try {
-            val sourceRepository = RoomSourceRepository(db.sourceDao())
+            val sourceRepository = RoomSourceRepository(db.sourceDao(), db.sourceScheduleDao())
             val stateRepository = RoomCollectionStateRepository(db.collectionStateDao())
             val sourceId = SourceId("source")
             sourceRepository.upsert(

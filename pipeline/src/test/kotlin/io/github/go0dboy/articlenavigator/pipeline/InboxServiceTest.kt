@@ -44,7 +44,7 @@ class InboxServiceTest {
             storedOrigins += origin("source-a", "discovery-a", "https://feed-a.test/article", now.minusSeconds(30))
             storedOrigins += origin("source-b", "discovery-b", "https://feed-b.test/article", now.minusSeconds(10))
         }
-        val sourceRepository = FakeSourceRepository(
+        val sourceRepository = InboxTestSourceRepository(
             source("source-a", "Feed A", "https://feed-a.test/feed.xml"),
             source("source-b", "Feed B", "https://feed-b.test/feed.xml"),
         )
@@ -76,7 +76,7 @@ class InboxServiceTest {
             storedOrigins += origin("source-a", "discovery-a", "https://feed-a.test/article", now.minusSeconds(20))
             storedOrigins += origin("source-b", "discovery-b", "https://feed-b.test/article", now.minusSeconds(10))
         }
-        val sourceRepository = FakeSourceRepository(
+        val sourceRepository = InboxTestSourceRepository(
             source("source-a", "Feed A", "https://feed-a.test/feed.xml"),
             source("source-b", "Feed B", "https://feed-b.test/feed.xml"),
         )
@@ -116,7 +116,7 @@ class InboxServiceTest {
     )
 }
 
-private class FakeSourceRepository(vararg sources: Source) : SourceRepository {
+private class InboxTestSourceRepository(vararg sources: Source) : SourceRepository {
     private val values = sources.associateBy { it.id }
 
     override suspend fun upsert(source: Source) = error("not used")

@@ -209,7 +209,7 @@ class IngestionPipelineTest {
         knowledge: FakeKnowledgeRepository,
         fetch: suspend (DiscoveredItem) -> FetchResult,
     ) = IngestionPipeline(
-        sourceRepository = FakeSourceRepository(source),
+        sourceRepository = PipelineTestSourceRepository(source),
         ingestionRepository = ingestion,
         inboxRepository = inbox,
         knowledgeRepository = knowledge,
@@ -235,7 +235,7 @@ class IngestionPipelineTest {
     )
 }
 
-private class FakeSourceRepository(private val source: Source) : SourceRepository {
+private class PipelineTestSourceRepository(private val source: Source) : SourceRepository {
     override suspend fun upsert(source: Source) = Unit
     override suspend fun findById(id: SourceId): Source? = source.takeIf { it.id == id }
     override suspend fun findDue(now: Instant): List<Source> = emptyList()

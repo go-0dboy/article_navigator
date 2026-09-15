@@ -35,7 +35,7 @@ class DatabaseIntegrationTest {
         database = Room.inMemoryDatabaseBuilder<ArticleNavigatorDatabase>()
             .setDriver(BundledSQLiteDriver())
             .build()
-        sourceRepository = RoomSourceRepository(database.sourceDao())
+        sourceRepository = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
         ingestionRepository = RoomIngestionRepository(database.ingestionDao())
         knowledgeRepository = RoomKnowledgeRepository(database.documentDao())
     }
@@ -93,7 +93,17 @@ class DatabaseIntegrationTest {
             disposition = ContentDisposition.SAVED,
         )
         val version = DocumentVersion(document.id, 1, "hash-v1", "Body", now, "parser-v1")
-        val provenance = DocumentProvenance(document.id, source.id, document.canonicalUrl, now, now)
+        val provenance = DocumentProvenance(
+            documentId = document.id,
+            sourceId = source.id,
+            discoveredUrl = document.canonicalUrl,
+            resolvedUrl = document.canonicalUrl,
+            discoveredAt = now,
+            fetchedAt = now,
+            sourceNameSnapshot = source.name,
+            sourceUrlSnapshot = source.url,
+            sourceTypeSnapshot = source.type.name,
+        )
         val fingerprint = SeenFingerprint("url-hash", "hash-v1", source.id, now, ContentDisposition.SAVED)
 
         knowledgeRepository.persist(document, version, provenance, fingerprint)

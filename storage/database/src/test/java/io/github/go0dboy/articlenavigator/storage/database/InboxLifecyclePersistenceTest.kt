@@ -53,7 +53,7 @@ class InboxLifecyclePersistenceTest {
         database = Room.inMemoryDatabaseBuilder<ArticleNavigatorDatabase>()
             .setDriver(BundledSQLiteDriver())
             .build()
-        sources = RoomSourceRepository(database.sourceDao())
+        sources = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
         ingestion = RoomIngestionRepository(database.ingestionDao())
         inbox = RoomInboxRepository(database.inboxDao())
         knowledge = RoomKnowledgeRepository(database.documentDao())
@@ -122,7 +122,17 @@ class InboxLifecyclePersistenceTest {
             disposition = ContentDisposition.SAVED,
         )
         val version = DocumentVersion(document.id, 1, item.contentHash, item.normalizedText, now, "parser-v1")
-        val provenance = DocumentProvenance(document.id, source.id, discovery.url, discovery.discoveredAt, now)
+        val provenance = DocumentProvenance(
+            documentId = document.id,
+            sourceId = source.id,
+            discoveredUrl = discovery.url,
+            resolvedUrl = discovery.resolvedUrl ?: discovery.url,
+            discoveredAt = discovery.discoveredAt,
+            fetchedAt = now,
+            sourceNameSnapshot = source.name,
+            sourceUrlSnapshot = source.url,
+            sourceTypeSnapshot = source.type.name,
+        )
         val fingerprint = SeenFingerprint("url-hash-save", item.contentHash, source.id, now, ContentDisposition.SAVED)
 
         inbox.save(item.id, document, version, listOf(provenance), listOf(fingerprint))
@@ -139,6 +149,7 @@ class InboxLifecyclePersistenceTest {
         sourceId = source.id,
         url = url,
         canonicalUrl = url,
+        resolvedUrl = url,
         title = "Article $id",
         discoveredAt = now.minusSeconds(30),
         status = DiscoveryStatus.FETCHED,
@@ -159,6 +170,7 @@ class InboxLifecyclePersistenceTest {
         discoveredItemId = discovery.id,
         sourceId = source.id,
         discoveredUrl = discovery.url,
+        resolvedUrl = discovery.resolvedUrl,
         canonicalUrl = discovery.canonicalUrl ?: discovery.url,
         discoveredAt = discovery.discoveredAt,
         fetchedAt = now,

@@ -7,6 +7,7 @@ import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
 import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
 import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
 import io.github.go0dboy.articlenavigator.core.model.SourceId
+import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -30,7 +31,17 @@ class RoomKnowledgeRepositoryTest {
             disposition = ContentDisposition.SAVED,
         )
         val version = DocumentVersion(document.id, 1, "hash-v1", "Body", now, "parser-v1")
-        val provenance = DocumentProvenance(document.id, SourceId("source-1"), "https://example.test/article", now, now)
+        val provenance = DocumentProvenance(
+            documentId = document.id,
+            sourceId = SourceId("source-1"),
+            discoveredUrl = "https://example.test/article",
+            resolvedUrl = "https://example.test/article",
+            discoveredAt = now,
+            fetchedAt = now,
+            sourceNameSnapshot = "Source",
+            sourceUrlSnapshot = "https://example.test/feed.xml",
+            sourceTypeSnapshot = SourceType.RSS.name,
+        )
         val fingerprint = SeenFingerprint("url-hash", "hash-v1", SourceId("source-1"), now, ContentDisposition.SAVED)
 
         repository.persist(document, version, provenance, fingerprint)
