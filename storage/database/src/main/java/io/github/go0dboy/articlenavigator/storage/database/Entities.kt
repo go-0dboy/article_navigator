@@ -156,7 +156,7 @@ data class DocumentVersionEntity(
 
 @Entity(
     tableName = "document_provenance",
-    primaryKeys = ["documentId", "sourceId"],
+    primaryKeys = ["documentId", "originKey"],
     foreignKeys = [
         ForeignKey(entity = DocumentEntity::class, parentColumns = ["id"], childColumns = ["documentId"], onDelete = ForeignKey.CASCADE),
         ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE),
@@ -165,6 +165,7 @@ data class DocumentVersionEntity(
 )
 data class DocumentProvenanceEntity(
     val documentId: String,
+    val originKey: String,
     val sourceId: String,
     val discoveredUrl: String,
     val discoveredAtEpochMillis: Long,
