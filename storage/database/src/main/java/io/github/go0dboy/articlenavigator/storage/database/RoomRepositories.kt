@@ -26,7 +26,10 @@ import io.github.go0dboy.articlenavigator.core.model.SourceCursor
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import java.time.Instant
 
-class RoomSourceRepository(private val dao: SourceDao) : SourceRepository {
+class RoomSourceRepository(
+    private val dao: SourceDao,
+    private val scheduleDao: SourceScheduleDao,
+) : SourceRepository {
     override suspend fun upsert(source: Source) = dao.saveUserSource(source.toEntity())
     override suspend fun findById(id: SourceId): Source? = dao.findById(id.value)?.toDomain()
     override suspend fun findDue(now: Instant): List<Source> = dao.findDue(now.toEpochMilli()).map { it.toDomain() }
@@ -35,6 +38,8 @@ class RoomSourceRepository(private val dao: SourceDao) : SourceRepository {
     override suspend fun listAll(): List<Source> = dao.listAll().map { it.toDomain() }
     override suspend fun loadCursor(sourceId: SourceId): SourceCursor? = dao.findCursor(sourceId.value)?.toDomain()
     override suspend fun saveCursor(cursor: SourceCursor) = dao.upsertCursor(cursor.toEntity())
+    override suspend fun markDue(sourceId: SourceId, at: Instant): Boolean =
+        scheduleDao.markDue(sourceId.value, at.toEpochMilli()) == 1
 }
 
 class RoomCollectionStateRepository(private val dao: CollectionStateDao) : CollectionStateRepository {
@@ -132,8 +137,7 @@ class RoomIngestionRepository(private val dao: IngestionDao) : IngestionReposito
 
 class RoomInboxRepository(private val dao: InboxDao) : InboxRepository {
     override suspend fun put(item: InboxItem, origin: InboxOrigin) = dao.put(item.toEntity(), origin.toEntity())
-    override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) =
-        dao.attachOrigin(itemId.value, origin.toEntity())
+    override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) = dao.attachOrigin(itemId.value, origin.toEntity())
     override suspend fun listPending(limit: Int): List<InboxItem> = dao.listPending(limit).map { it.toDomain() }
     override suspend fun findById(id: InboxItemId): InboxItem? = dao.findById(id.value)?.toDomain()
     override suspend fun findByCanonicalUrl(canonicalUrl: String): InboxItem? = dao.findByCanonicalUrl(canonicalUrl)?.toDomain()
