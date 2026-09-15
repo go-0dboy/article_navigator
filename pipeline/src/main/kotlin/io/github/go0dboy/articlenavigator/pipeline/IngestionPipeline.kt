@@ -1,0 +1,221 @@
+package io.github.go0dboy.articlenavigator.pipeline
+
+import io.github.go0dboy.articlenavigator.collector.api.FetchResult
+import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
+import io.github.go0dboy.articlenavigator.collector.api.UrlCanonicalizer
+import io.github.go0dboy.articlenavigator.core.data.InboxRepository
+import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
+import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
+import io.github.go0dboy.articlenavigator.core.data.SourceRepository
+import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
+import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
+import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
+import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
+import io.github.go0dboy.articlenavigator.core.model.InboxItem
+import io.github.go0dboy.articlenavigator.core.model.InboxItemId
+import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
+import io.github.go0dboy.articlenavigator.core.model.RawContent
+import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
+import io.github.go0dboy.articlenavigator.core.model.Source
+import java.security.MessageDigest
+import java.time.Clock
+import java.time.Duration
+import java.time.Instant
+import kotlin.math.min
+
+fun interface ContentFetcher {
+    suspend fun fetch(source: Source, item: DiscoveredItem): FetchResult
+}
+
+fun interface SourceAdapterResolver {
+    fun resolve(source: Source): SourceAdapter?
+}
+
+data class IngestionReport(
+    val processed: Int,
+    val addedToInbox: Int,
+    val mergedIntoInbox: Int,
+    val alreadyKnown: Int,
+    val failed: Int,
+)
+
+class IngestionPipeline(
+    private val sourceRepository: SourceRepository,
+    private val ingestionRepository: IngestionRepository,
+    private val inboxRepository: InboxRepository,
+    private val knowledgeRepository: KnowledgeRepository,
+    private val adapterResolver: SourceAdapterResolver,
+    private val extractor: ContentExtractor = DefaultContentExtractor(),
+    private val clock: Clock = Clock.systemUTC(),
+    private val retryBaseDelay: Duration = Duration.ofMinutes(15),
+    private val retryMaxDelay: Duration = Duration.ofHours(24),
+) {
+    suspend fun processReady(limit: Int = 20): IngestionReport {
+        require(limit > 0)
+        val now = clock.instant()
+        val ready = ingestionRepository.findReadyForProcessing(now, limit)
+        var added = 0
+        var merged = 0
+        var known = 0
+        var failed = 0
+
+        for (item in ready) {
+            when (processOne(item, now)) {
+                Outcome.ADDED -> added++
+                Outcome.MERGED -> merged++
+                Outcome.KNOWN -> known++
+                Outcome.FAILED -> failed++
+            }
+        }
+        return IngestionReport(ready.size, added, merged, known, failed)
+    }
+
+    private suspend fun processOne(item: DiscoveredItem, now: Instant): Outcome {
+        val canonicalUrl = item.canonicalUrl
+            ?: UrlCanonicalizer.canonicalize(item.url)
+            ?: return fail(item, now, IllegalArgumentException("Invalid article URL: ${item.url}"))
+        val canonicalHash = sha256(canonicalUrl)
+
+        val previousDisposition = knowledgeRepository.findSeen(canonicalHash, item.sourceId)
+        if (previousDisposition != null) {
+            ingestionRepository.upsertDiscovered(
+                item.copy(
+                    canonicalUrl = canonicalUrl,
+                    status = DiscoveryStatus.PROCESSED,
+                    nextProcessingAt = null,
+                    lastProcessingError = null,
+                ),
+            )
+            ingestionRepository.deleteRawContent(item.id)
+            return Outcome.KNOWN
+        }
+
+        val source = sourceRepository.findById(item.sourceId)
+            ?: return fail(item, now, IllegalStateException("Source ${item.sourceId.value} no longer exists"))
+        val adapter = adapterResolver.resolve(source)
+            ?: return fail(item, now, IllegalStateException("No adapter ${source.adapterType} for ${source.type}"))
+
+        return try {
+            val fetched = adapter.fetch(item)
+            require(fetched.statusCode in 200..299) { "Article request returned HTTP ${fetched.statusCode}" }
+            val fetchedAt = clock.instant()
+            ingestionRepository.storeRawContent(
+                RawContent(
+                    discoveredItemId = item.id,
+                    mimeType = fetched.contentType,
+                    payload = fetched.body.toString(Charsets.UTF_8),
+                    fetchedAt = fetchedAt,
+                    httpStatus = fetched.statusCode,
+                    expiresAt = fetchedAt.plus(Duration.ofHours(24)),
+                ),
+            )
+
+            val extracted = extractor.extract(fetched.body, fetched.contentType, canonicalUrl)
+            val contentHash = sha256(extracted.normalizedText)
+            val fetchedItem = item.copy(
+                canonicalUrl = canonicalUrl,
+                contentHash = contentHash,
+                status = DiscoveryStatus.FETCHED,
+                processingAttempts = item.processingAttempts,
+                nextProcessingAt = null,
+                lastProcessingError = null,
+            )
+            ingestionRepository.upsertDiscovered(fetchedItem)
+
+            val title = extracted.title?.takeIf { it.isNotBlank() }
+                ?: item.title?.takeIf { it.isNotBlank() }
+                ?: canonicalUrl
+
+            val existingDocument = knowledgeRepository.findByCanonicalUrl(canonicalUrl)
+                ?: knowledgeRepository.findByContentHash(contentHash)
+            if (existingDocument != null) {
+                knowledgeRepository.recordDiscovery(
+                    documentId = existingDocument.id,
+                    provenance = DocumentProvenance(
+                        documentId = existingDocument.id,
+                        sourceId = item.sourceId,
+                        discoveredUrl = item.url,
+                        discoveredAt = item.discoveredAt,
+                        fetchedAt = fetchedAt,
+                    ),
+                    fingerprint = SeenFingerprint(
+                        canonicalUrlHash = canonicalHash,
+                        contentHash = contentHash,
+                        sourceId = item.sourceId,
+                        seenAt = now,
+                        disposition = ContentDisposition.SAVED,
+                    ),
+                    discoveredItemId = item.id,
+                )
+                return Outcome.KNOWN
+            }
+
+            val existingInbox = inboxRepository.findByCanonicalUrl(canonicalUrl)
+                ?: inboxRepository.findByContentHash(contentHash)
+            if (existingInbox != null) {
+                inboxRepository.attachOrigin(
+                    existingInbox.id,
+                    InboxOrigin(
+                        inboxItemId = existingInbox.id,
+                        discoveredItemId = item.id,
+                        sourceId = item.sourceId,
+                        discoveredUrl = item.url,
+                        canonicalUrl = canonicalUrl,
+                        discoveredAt = item.discoveredAt,
+                        fetchedAt = fetchedAt,
+                    ),
+                )
+                return Outcome.MERGED
+            }
+
+            val inboxId = InboxItemId("inbox-${sha256(canonicalUrl)}")
+            inboxRepository.put(
+                InboxItem(
+                    id = inboxId,
+                    canonicalUrl = canonicalUrl,
+                    title = title,
+                    publishedAt = item.publishedAt,
+                    normalizedText = extracted.normalizedText,
+                    contentHash = contentHash,
+                    createdAt = now,
+                    updatedAt = now,
+                ),
+                InboxOrigin(
+                    inboxItemId = inboxId,
+                    discoveredItemId = item.id,
+                    sourceId = item.sourceId,
+                    discoveredUrl = item.url,
+                    canonicalUrl = canonicalUrl,
+                    discoveredAt = item.discoveredAt,
+                    fetchedAt = fetchedAt,
+                ),
+            )
+            Outcome.ADDED
+        } catch (error: Throwable) {
+            fail(item, now, error)
+        }
+    }
+
+    private suspend fun fail(item: DiscoveredItem, now: Instant, error: Throwable): Outcome {
+        val attempts = item.processingAttempts + 1
+        val multiplier = 1L shl min(attempts - 1, 10)
+        val delay = retryBaseDelay.multipliedBy(multiplier).coerceAtMost(retryMaxDelay)
+        ingestionRepository.upsertDiscovered(
+            item.copy(
+                status = DiscoveryStatus.FAILED,
+                processingAttempts = attempts,
+                nextProcessingAt = now.plus(delay),
+                lastProcessingError = (error.message ?: error::class.java.simpleName).take(500),
+            ),
+        )
+        return Outcome.FAILED
+    }
+
+    private fun Duration.coerceAtMost(other: Duration): Duration = if (this > other) other else this
+
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
+    private enum class Outcome { ADDED, MERGED, KNOWN, FAILED }
+}
