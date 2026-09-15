@@ -35,10 +35,11 @@ reject   read      save
 - Room 3 / SQLite storage foundation;
 - FTS5 + replaceable vector search planned as derived indexes;
 - optional on-device/cloud AI behind interfaces, never required for preserving knowledge;
-- GitHub Actions builds, tests, lints and produces a debug APK.
+- GitHub Actions builds, tests, lints and produces a debug APK;
+- every development phase must add its required automated tests and keep all CI quality gates green.
 
-See [Architecture](docs/ARCHITECTURE.md), [Development route](docs/ROADMAP.md) and [ADRs](docs/adr/).
+See [Architecture](docs/ARCHITECTURE.md), [Development route](docs/ROADMAP.md), [Build instructions](docs/BUILDING.md) and [ADRs](docs/adr/).
 
 ## Repository status
 
-Foundation development has started on the first architecture/bootstrap pull request. Current code establishes the multi-module build, domain model, collector API, ingestion-stage API and canonical database schema.
+The architecture/bootstrap foundation is under validation in the first pull request. The GitHub build already exercises unit tests, Android lint, debug APK assembly and artifact publication on the stable Android 16 / API 36 toolchain.
