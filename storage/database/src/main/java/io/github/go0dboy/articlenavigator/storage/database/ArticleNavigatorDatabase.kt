@@ -18,12 +18,13 @@ import androidx.room3.RoomDatabase
         SeenFingerprintEntity::class,
         InterestEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class ArticleNavigatorDatabase : RoomDatabase() {
     abstract fun sourceDao(): SourceDao
     abstract fun collectionStateDao(): CollectionStateDao
+    abstract fun collectionDao(): CollectionDao
     abstract fun ingestionDao(): IngestionDao
     abstract fun inboxDao(): InboxDao
     abstract fun documentDao(): DocumentDao
