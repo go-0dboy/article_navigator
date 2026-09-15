@@ -10,18 +10,21 @@ import androidx.room3.RoomDatabase
         SourceCollectionStateEntity::class,
         DiscoveredItemEntity::class,
         RawContentEntity::class,
+        InboxItemEntity::class,
+        InboxOriginEntity::class,
         DocumentEntity::class,
         DocumentVersionEntity::class,
         DocumentProvenanceEntity::class,
         SeenFingerprintEntity::class,
         InterestEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class ArticleNavigatorDatabase : RoomDatabase() {
     abstract fun sourceDao(): SourceDao
     abstract fun collectionStateDao(): CollectionStateDao
     abstract fun ingestionDao(): IngestionDao
+    abstract fun inboxDao(): InboxDao
     abstract fun documentDao(): DocumentDao
 }
