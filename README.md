@@ -42,4 +42,4 @@ See [Architecture](docs/ARCHITECTURE.md), [Development route](docs/ROADMAP.md), 
 
 ## Repository status
 
-The architecture/bootstrap foundation is under validation in the first pull request. The GitHub build already exercises unit tests, Android lint, debug APK assembly and artifact publication on the stable Android 16 / API 36 toolchain.
+The architecture/bootstrap foundation is under validation in the first pull request. GitHub CI exercises unit tests, Android lint, debug APK assembly and artifact publication on the stable Android 16 / API 36 toolchain.
