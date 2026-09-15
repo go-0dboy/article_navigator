@@ -89,10 +89,28 @@ interface CollectionRepository {
 }
 
 interface IngestionRepository {
+    /** Creation/import/test seeding path. Runtime processing transitions must use targeted methods. */
     suspend fun upsertDiscovered(item: DiscoveredItem)
     suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem?
     suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem?
     suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem>
+
+    /** Updates only pipeline-owned state and never rewrites discovery timestamps/sightings. */
+    suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean
+    suspend fun markFetched(
+        id: DiscoveredItemId,
+        canonicalUrl: String,
+        resolvedUrl: String?,
+        contentHash: String,
+    ): Boolean
+    suspend fun markFailed(
+        id: DiscoveredItemId,
+        processingAttempts: Int,
+        nextProcessingAt: Instant,
+        lastProcessingError: String,
+    ): Boolean
+    suspend fun markSkipped(id: DiscoveredItemId, canonicalUrl: String?, lastProcessingError: String): Boolean
+
     suspend fun storeRawContent(content: RawContent)
     suspend fun loadRawContent(id: DiscoveredItemId): RawContent?
     suspend fun deleteRawContent(id: DiscoveredItemId)
