@@ -7,6 +7,7 @@ import androidx.room3.RoomDatabase
     entities = [
         SourceEntity::class,
         SourceCursorEntity::class,
+        DiscoveredItemEntity::class,
         DocumentEntity::class,
         DocumentVersionEntity::class,
         SeenFingerprintEntity::class,
@@ -17,5 +18,6 @@ import androidx.room3.RoomDatabase
 )
 abstract class ArticleNavigatorDatabase : RoomDatabase() {
     abstract fun sourceDao(): SourceDao
+    abstract fun discoveryDao(): DiscoveryDao
     abstract fun documentDao(): DocumentDao
 }
