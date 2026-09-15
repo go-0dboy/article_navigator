@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "io.github.go0dboy.articlenavigator"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "io.github.go0dboy.articlenavigator"
