@@ -29,6 +29,12 @@ val MIGRATION_2_3 = Migration(2, 3) { connection ->
     connection.prepare("CREATE INDEX IF NOT EXISTS `index_discovered_items_nextProcessingAtEpochMillis` ON `discovered_items` (`nextProcessingAtEpochMillis`)")
         .use { it.step() }
 
+    // Phase 3 had no Inbox or content-ingestion stage. Its bundled device-test
+    // source produced diagnostic discovery rows only; do not unexpectedly ingest
+    // those historical diagnostics after an in-place upgrade to Phase 4.
+    connection.prepare("UPDATE `discovered_items` SET `status` = 'PROCESSED' WHERE `sourceId` = 'phase3-sample-rss'")
+        .use { it.step() }
+
     connection.prepare(
         """
         CREATE TABLE IF NOT EXISTS `inbox_items` (
