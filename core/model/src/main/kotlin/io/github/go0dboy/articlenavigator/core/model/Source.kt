@@ -28,7 +28,13 @@ data class Source(
     val createdAt: Instant,
     val lastSuccessfulCheckAt: Instant? = null,
     val nextCheckAt: Instant? = null,
-)
+    /** Incremented only when user-owned source settings change. */
+    val settingsRevision: Long = 0,
+) {
+    init {
+        require(settingsRevision >= 0)
+    }
+}
 
 data class SourceCursor(
     val sourceId: SourceId,
