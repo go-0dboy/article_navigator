@@ -4,6 +4,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
@@ -135,7 +136,7 @@ class OkHttpTransportTest {
                     .build()
                 try {
                     val transport = OkHttpTransport(client)
-                    val request = async {
+                    val request = async(start = CoroutineStart.UNDISPATCHED) {
                         transport.execute(HttpRequest(server.url("/slow").toString(), maxResponseBytes = 512 * 1024))
                     }
 
