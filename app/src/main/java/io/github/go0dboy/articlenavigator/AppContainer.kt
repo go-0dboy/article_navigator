@@ -25,6 +25,8 @@ import io.github.go0dboy.articlenavigator.scheduler.core.SourceAdapterRegistry
 import io.github.go0dboy.articlenavigator.storage.database.ArticleNavigatorDatabase
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_1_2
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_2_3
+import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_3_4
+import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionStateRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomInboxRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomIngestionRepository
@@ -42,10 +44,11 @@ class AppContainer(
         name = "article-navigator.db",
     )
         .setDriver(BundledSQLiteDriver())
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
         .build()
 
-    private val sourceRepository = RoomSourceRepository(database.sourceDao())
+    private val sourceRepository = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
+    private val collectionRepository = RoomCollectionRepository(database.collectionDao())
     private val ingestionRepository = RoomIngestionRepository(database.ingestionDao())
     private val stateRepository = RoomCollectionStateRepository(database.collectionStateDao())
     private val inboxRepository = RoomInboxRepository(database.inboxDao())
@@ -57,8 +60,7 @@ class AppContainer(
 
     private val orchestrator = CollectionOrchestrator(
         sourceRepository = sourceRepository,
-        ingestionRepository = ingestionRepository,
-        stateRepository = stateRepository,
+        collectionRepository = collectionRepository,
         adapterRegistry = adapterRegistry,
         maxParallelism = 4,
     )
@@ -71,7 +73,7 @@ class AppContainer(
         adapterResolver = SourceAdapterResolver(adapterRegistry::resolve),
     )
 
-    private val inboxService = InboxService(inboxRepository)
+    private val inboxService = InboxService(inboxRepository, sourceRepository)
 
     override suspend fun runCollection(isUnmeteredNetwork: Boolean): CollectionRunReport {
         val diagnosticWasEnabled = sourceRepository.findById(SAMPLE_SOURCE_ID)?.enabled == true
@@ -111,9 +113,9 @@ class AppContainer(
                     name = "Article Navigator device sample",
                     url = SAMPLE_FEED_URL,
                     enabled = true,
-                    nextCheckAt = if (forceDue) now else existing.nextCheckAt,
                 ),
             )
+            if (forceDue) sourceRepository.markDue(SAMPLE_SOURCE_ID, now)
         }
     }
 
@@ -123,7 +125,8 @@ class AppContainer(
             ?: throw IllegalArgumentException("Нужен корректный HTTP/HTTPS URL RSS или Atom")
         val existing = sourceRepository.listAll().firstOrNull { it.id != SAMPLE_SOURCE_ID && it.url == canonicalUrl }
         if (existing != null) {
-            sourceRepository.upsert(existing.copy(name = cleanName, enabled = true, nextCheckAt = Instant.now()))
+            sourceRepository.upsert(existing.copy(name = cleanName, enabled = true))
+            sourceRepository.markDue(existing.id, Instant.now())
             return existing.id
         }
 
@@ -151,7 +154,7 @@ class AppContainer(
         val now = Instant.now()
         sourceRepository.listAll()
             .filter { it.enabled && it.id != SAMPLE_SOURCE_ID }
-            .forEach { sourceRepository.upsert(it.copy(nextCheckAt = now)) }
+            .forEach { sourceRepository.markDue(it.id, now) }
         return CollectionWorkScheduler.runNow(context)
     }
 
