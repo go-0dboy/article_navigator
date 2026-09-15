@@ -32,7 +32,6 @@ import java.time.Instant
 import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -54,7 +53,7 @@ class IngestionPipelineTest {
     fun `new article is extracted and placed into Inbox`() = runTest {
         val discovered = discovered("https://example.test/article")
         val ingestion = FakeIngestionRepository(discovered)
-        val inbox = FakeInboxRepository()
+        val inbox = FakeInboxRepository(ingestion)
         val knowledge = FakeKnowledgeRepository()
         val pipeline = pipeline(ingestion, inbox, knowledge) {
             FetchResult(
@@ -73,13 +72,14 @@ class IngestionPipelineTest {
         assertEquals("Article title", inbox.items.values.single().title)
         assertTrue(inbox.items.values.single().normalizedText.contains("Useful body text."))
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(discovered.id).status)
+        assertEquals(null, ingestion.raw[discovered.id])
     }
 
     @Test
     fun `previously dismissed URL is not fetched again`() = runTest {
         val discovered = discovered("https://example.test/seen")
         val ingestion = FakeIngestionRepository(discovered)
-        val inbox = FakeInboxRepository()
+        val inbox = FakeInboxRepository(ingestion)
         val knowledge = FakeKnowledgeRepository().apply {
             seenBySource[source.id] = SeenFingerprint(
                 canonicalUrlHash = sha256ForTest("https://example.test/seen"),
@@ -106,7 +106,7 @@ class IngestionPipelineTest {
     fun `fetch failure persists retry backoff`() = runTest {
         val discovered = discovered("https://example.test/failure")
         val ingestion = FakeIngestionRepository(discovered)
-        val pipeline = pipeline(ingestion, FakeInboxRepository(), FakeKnowledgeRepository()) {
+        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
             throw IOException("network down")
         }
 
@@ -124,7 +124,7 @@ class IngestionPipelineTest {
     fun `same normalized content merges provenance into existing Inbox item`() = runTest {
         val discovered = discovered("https://example.test/alternate")
         val ingestion = FakeIngestionRepository(discovered)
-        val inbox = FakeInboxRepository()
+        val inbox = FakeInboxRepository(ingestion)
         val body = "<article><p>Same durable content</p></article>".toByteArray()
         val extracted = DefaultContentExtractor().extract(body, "text/html", discovered.url)
         val existing = InboxItem(
@@ -146,6 +146,7 @@ class IngestionPipelineTest {
         assertEquals(1, report.mergedIntoInbox)
         assertEquals(1, inbox.items.size)
         assertEquals(1, inbox.origins.getValue(existing.id).size)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(discovered.id).status)
     }
 
     private fun pipeline(
@@ -211,25 +212,57 @@ private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionReposi
     override suspend fun storeRawContent(content: RawContent) { raw[content.discoveredItemId] = content }
     override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = raw[id]
     override suspend fun deleteRawContent(id: DiscoveredItemId) { raw.remove(id) }
+
+    suspend fun commitOrigin(origin: InboxOrigin) {
+        items[origin.discoveredItemId]?.let { item ->
+            items[origin.discoveredItemId] = item.copy(
+                status = DiscoveryStatus.PROCESSED,
+                nextProcessingAt = null,
+                lastProcessingError = null,
+            )
+        }
+        raw.remove(origin.discoveredItemId)
+    }
 }
 
-private class FakeInboxRepository : InboxRepository {
+private class FakeInboxRepository(
+    private val ingestion: FakeIngestionRepository,
+) : InboxRepository {
     val items = linkedMapOf<InboxItemId, InboxItem>()
     val origins = mutableMapOf<InboxItemId, MutableList<InboxOrigin>>()
+
     override suspend fun put(item: InboxItem, origin: InboxOrigin) {
         items[item.id] = item
         origins.getOrPut(item.id) { mutableListOf() }.add(origin)
+        ingestion.commitOrigin(origin)
     }
+
     override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) {
         origins.getOrPut(itemId) { mutableListOf() }.add(origin)
+        ingestion.commitOrigin(origin)
     }
+
     override suspend fun listPending(limit: Int): List<InboxItem> = items.values.take(limit)
     override suspend fun findById(id: InboxItemId): InboxItem? = items[id]
-    override suspend fun findByCanonicalUrl(canonicalUrl: String): InboxItem? = items.values.firstOrNull { it.canonicalUrl == canonicalUrl }
-    override suspend fun findByContentHash(contentHash: String): InboxItem? = items.values.firstOrNull { it.contentHash == contentHash }
+    override suspend fun findByCanonicalUrl(canonicalUrl: String): InboxItem? =
+        items.values.firstOrNull { it.canonicalUrl == canonicalUrl }
+    override suspend fun findByContentHash(contentHash: String): InboxItem? =
+        items.values.firstOrNull { it.contentHash == contentHash }
     override suspend fun origins(id: InboxItemId): List<InboxOrigin> = origins[id].orEmpty()
-    override suspend fun discard(id: InboxItemId, disposition: ContentDisposition, fingerprints: List<SeenFingerprint>) { items.remove(id); origins.remove(id) }
-    override suspend fun save(id: InboxItemId, document: Document, version: DocumentVersion, provenances: List<DocumentProvenance>, fingerprints: List<SeenFingerprint>) { items.remove(id); origins.remove(id) }
+    override suspend fun discard(id: InboxItemId, disposition: ContentDisposition, fingerprints: List<SeenFingerprint>) {
+        items.remove(id)
+        origins.remove(id)
+    }
+    override suspend fun save(
+        id: InboxItemId,
+        document: Document,
+        version: DocumentVersion,
+        provenances: List<DocumentProvenance>,
+        fingerprints: List<SeenFingerprint>,
+    ) {
+        items.remove(id)
+        origins.remove(id)
+    }
 }
 
 private class FakeKnowledgeRepository : KnowledgeRepository {
