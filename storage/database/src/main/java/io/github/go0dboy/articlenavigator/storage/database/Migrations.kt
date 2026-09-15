@@ -75,4 +75,37 @@ val MIGRATION_2_3 = Migration(2, 3) { connection ->
         .use { it.step() }
     connection.prepare("CREATE INDEX IF NOT EXISTS `index_documents_contentHash` ON `documents` (`contentHash`)")
         .use { it.step() }
+
+    // Phase 1 keyed provenance only by (document, source), which could collapse
+    // distinct URLs from the same source. Re-key it by an explicit stable origin key.
+    connection.prepare("ALTER TABLE `document_provenance` RENAME TO `document_provenance_legacy`")
+        .use { it.step() }
+    connection.prepare(
+        """
+        CREATE TABLE `document_provenance` (
+            `documentId` TEXT NOT NULL,
+            `originKey` TEXT NOT NULL,
+            `sourceId` TEXT NOT NULL,
+            `discoveredUrl` TEXT NOT NULL,
+            `discoveredAtEpochMillis` INTEGER NOT NULL,
+            `fetchedAtEpochMillis` INTEGER NOT NULL,
+            PRIMARY KEY(`documentId`, `originKey`),
+            FOREIGN KEY(`documentId`) REFERENCES `documents`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+            FOREIGN KEY(`sourceId`) REFERENCES `sources`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+        )
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare(
+        """
+        INSERT INTO `document_provenance` (
+            `documentId`, `originKey`, `sourceId`, `discoveredUrl`, `discoveredAtEpochMillis`, `fetchedAtEpochMillis`
+        )
+        SELECT
+            `documentId`, `sourceId` || '|' || `discoveredUrl`, `sourceId`, `discoveredUrl`, `discoveredAtEpochMillis`, `fetchedAtEpochMillis`
+        FROM `document_provenance_legacy`
+        """.trimIndent(),
+    ).use { it.step() }
+    connection.prepare("DROP TABLE `document_provenance_legacy`").use { it.step() }
+    connection.prepare("CREATE INDEX IF NOT EXISTS `index_document_provenance_sourceId` ON `document_provenance` (`sourceId`)")
+        .use { it.step() }
 }
