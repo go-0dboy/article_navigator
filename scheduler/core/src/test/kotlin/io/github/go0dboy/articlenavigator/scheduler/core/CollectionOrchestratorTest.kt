@@ -9,6 +9,7 @@ import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
+import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
 import io.github.go0dboy.articlenavigator.core.model.PollPolicy
 import io.github.go0dboy.articlenavigator.core.model.RawContent
 import io.github.go0dboy.articlenavigator.core.model.Source
@@ -172,6 +173,7 @@ class CollectionOrchestratorTest {
         override suspend fun upsert(source: Source) { sources[source.id] = source }
         override suspend fun findById(id: SourceId): Source? = sources[id]
         override suspend fun findDue(now: Instant): List<Source> = sources.values.filter { it.enabled && (it.nextCheckAt == null || !it.nextCheckAt!!.isAfter(now)) }
+        override suspend fun listAll(): List<Source> = sources.values.toList()
         override suspend fun loadCursor(sourceId: SourceId): SourceCursor? = cursors[sourceId]
         override suspend fun saveCursor(cursor: SourceCursor) { cursors[cursor.sourceId] = cursor }
         override suspend fun load(sourceId: SourceId): SourceCollectionState? = states[sourceId]
@@ -179,7 +181,14 @@ class CollectionOrchestratorTest {
         override suspend fun upsertDiscovered(item: DiscoveredItem) { items.removeAll { it.id == item.id }; items += item }
         override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = items.firstOrNull { it.id == id }
         override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? = items.firstOrNull { it.sourceId == sourceId && it.url == url }
+        override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> = items
+            .filter {
+                it.status == DiscoveryStatus.DISCOVERED ||
+                    (it.status == DiscoveryStatus.FAILED && (it.nextProcessingAt == null || !it.nextProcessingAt!!.isAfter(now)))
+            }
+            .take(limit)
         override suspend fun storeRawContent(content: RawContent) { raw[content.discoveredItemId] = content }
         override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = raw[id]
+        override suspend fun deleteRawContent(id: DiscoveredItemId) { raw.remove(id) }
     }
 }
