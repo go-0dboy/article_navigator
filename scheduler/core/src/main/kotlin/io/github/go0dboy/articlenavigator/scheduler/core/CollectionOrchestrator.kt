@@ -124,10 +124,10 @@ class CollectionOrchestrator(
                 )
             ) {
                 CollectionCommitOutcome.APPLIED -> SourceCollectionResult.Success(lease.source.id, discovery.items.size)
-                CollectionCommitOutcome.STALE -> SourceCollectionResult.Skipped(lease.source.id, SkipReason.STALE_RESULT)
+                CollectionCommitOutcome.STALE -> staleResult(lease)
             }
         } catch (cancelled: CancellationException) {
-            withContext(NonCancellable) { runCatching { collectionRepository.release(lease) } }
+            releaseBestEffort(lease)
             throw cancelled
         }
     }
@@ -147,8 +147,19 @@ class CollectionOrchestrator(
             )
         ) {
             CollectionCommitOutcome.APPLIED -> SourceCollectionResult.Failure(lease.source.id, errorType, error.message)
-            CollectionCommitOutcome.STALE -> SourceCollectionResult.Skipped(lease.source.id, SkipReason.STALE_RESULT)
+            CollectionCommitOutcome.STALE -> staleResult(lease)
         }
+    }
+
+    private suspend fun staleResult(lease: SourceCollectionLease): SourceCollectionResult {
+        // If the token is still ours (for example settings changed or the lease merely expired),
+        // release it immediately. If another run already owns the source, token matching makes this a no-op.
+        releaseBestEffort(lease)
+        return SourceCollectionResult.Skipped(lease.source.id, SkipReason.STALE_RESULT)
+    }
+
+    private suspend fun releaseBestEffort(lease: SourceCollectionLease) {
+        withContext(NonCancellable) { runCatching { collectionRepository.release(lease) } }
     }
 
     private fun retryDelayAfterFailure(error: Exception, failureCount: Int, normalInterval: Duration): Duration {
