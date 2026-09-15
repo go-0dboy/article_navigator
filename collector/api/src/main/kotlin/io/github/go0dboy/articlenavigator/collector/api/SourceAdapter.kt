@@ -6,7 +6,9 @@ import io.github.go0dboy.articlenavigator.core.model.SourceCursor
 import io.github.go0dboy.articlenavigator.core.model.SourceType
 
 interface SourceAdapter {
-    val supportedType: SourceType
+    val supportedTypes: Set<SourceType>
+
+    fun supports(type: SourceType): Boolean = type in supportedTypes
 
     suspend fun discover(
         source: Source,

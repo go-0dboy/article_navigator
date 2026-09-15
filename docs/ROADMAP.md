@@ -20,15 +20,15 @@ A PR with failing or missing required tests is not considered ready to merge.
 
 ## Test releases
 
-- **Technical test APK:** produced as soon as Phase 0 is green in GitHub Actions. Its purpose is to verify reproducible Git/CI build and installation on a real Android device.
+- **Technical test APK:** produced by Phase 0 and continuously rebuilt by CI. Its purpose is reproducible Git/CI build and installation on a real Android device.
 - **First functional test release:** after Phase 4. It must support the complete path: configure RSS/Atom source -> collect entries -> show Inbox -> open item -> reject/read-and-discard/save.
 - Later phases add search, semantic retrieval, relevance filtering and optional AI without changing the canonical storage contract.
 
-## Phase 0 — Repository and build foundation (in progress)
+## Phase 0 — Repository and build foundation — COMPLETE
 
 - multi-module Gradle project;
 - Android application shell;
-- current stable Android toolchain pinned in version catalog;
+- stable Android toolchain pinned in version catalog;
 - pure Kotlin domain/collector modules;
 - canonical Room 3 schema foundation;
 - GitHub Actions build, test, lint and APK artifact;
@@ -37,30 +37,32 @@ A PR with failing or missing required tests is not considered ready to merge.
 
 **Exit:** a fresh checkout passes tests/lint, builds in CI and produces a debug APK artifact.
 
-## Phase 1 — Persistence contracts and migrations
+## Phase 1 — Persistence contracts and migrations — COMPLETE
 
 - repository interfaces over canonical entities;
 - full source/source-cursor/discovery/document persistence;
 - schema export checked into Git;
-- migration test harness;
-- transaction boundaries for item lifecycle transitions.
+- Room/JVM integration-test foundation for future migrations;
+- transaction boundaries for item lifecycle transitions;
+- document identity separated from provenance so one document may be discovered through multiple sources.
 
-**Tests:** DAO/repository tests, uniqueness/idempotency tests, transaction tests and migration tests.
+**Tests:** DAO/repository tests, real in-memory SQLite integration tests, uniqueness/idempotency foundations, transaction tests and committed schema gate.
 
-**Exit:** source and document lifecycle survives process restart and schema is migration-tested.
+**Exit:** source and document lifecycle is represented durably and schema changes are guarded by CI.
 
-## Phase 2 — Collector framework and RSS/Atom
+## Phase 2 — Collector framework and RSS/Atom — IN PROGRESS
 
-- HTTP client abstraction;
+- HTTP transport abstraction with JVM/Android-compatible OkHttp implementation;
 - conditional requests using ETag/Last-Modified;
-- RSS and Atom adapters;
-- canonical URL normalization;
+- one RSS/Atom adapter with format auto-detection;
+- conservative canonical URL normalization;
+- deterministic discovery identities so persistence remains idempotent;
 - collector fixtures and contract tests;
-- retry/backoff/rate-limit policy.
+- explicit retry/backoff/rate-limit policy objects for the Phase 3 scheduler.
 
-**Tests:** RSS/Atom fixtures, malformed feeds, conditional HTTP, duplicate discovery, retry/backoff and adapter contract tests.
+**Tests:** RSS/Atom fixtures, malformed feeds, conditional HTTP, duplicate discovery identity, retry/backoff, URL canonicalization and HTTP transport tests. No unit test depends on live Internet.
 
-**Exit:** configured feeds can be polled idempotently and new entries are discovered once.
+**Exit:** configured feeds can be polled repeatably, conditional HTTP is preserved, and repeated feed contents resolve to the same discovery identities.
 
 ## Phase 3 — Android collection scheduler
 
