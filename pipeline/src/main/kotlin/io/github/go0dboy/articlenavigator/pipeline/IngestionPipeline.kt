@@ -184,6 +184,9 @@ class IngestionPipeline(
                         canonicalUrl = canonicalUrl,
                         discoveredAt = item.discoveredAt,
                         fetchedAt = fetchedAt,
+                        sourceNameSnapshot = source.name,
+                        sourceUrlSnapshot = source.url,
+                        sourceTypeSnapshot = source.type.name,
                     ),
                 )
                 return Outcome.MERGED
@@ -210,6 +213,9 @@ class IngestionPipeline(
                     canonicalUrl = canonicalUrl,
                     discoveredAt = item.discoveredAt,
                     fetchedAt = fetchedAt,
+                    sourceNameSnapshot = source.name,
+                    sourceUrlSnapshot = source.url,
+                    sourceTypeSnapshot = source.type.name,
                 ),
             )
             Outcome.ADDED
