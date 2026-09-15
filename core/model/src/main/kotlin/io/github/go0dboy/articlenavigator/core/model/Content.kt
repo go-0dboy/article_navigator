@@ -17,14 +17,24 @@ enum class ContentDisposition {
     SAVED,
 }
 
+/**
+ * A remote item as observed in a source.
+ *
+ * [url] is the absolute source-published URL before canonicalisation. It is durable provenance.
+ * [resolvedUrl] is the final URL after HTTP redirects, when a fetch has happened.
+ * [canonicalUrl] is a conservative URL-derived deduplication key, not provenance.
+ * [discoveredAt] is the first observation and never changes; [lastSeenAt] advances on rediscovery.
+ */
 data class DiscoveredItem(
     val id: DiscoveredItemId,
     val sourceId: SourceId,
     val url: String,
     val canonicalUrl: String? = null,
+    val resolvedUrl: String? = null,
     val title: String? = null,
     val publishedAt: Instant? = null,
     val discoveredAt: Instant,
+    val lastSeenAt: Instant = discoveredAt,
     val contentHash: String? = null,
     val status: DiscoveryStatus = DiscoveryStatus.DISCOVERED,
     val relevanceScore: Double? = null,
@@ -58,6 +68,7 @@ data class InboxOrigin(
     val discoveredItemId: DiscoveredItemId,
     val sourceId: SourceId,
     val discoveredUrl: String,
+    val resolvedUrl: String?,
     val canonicalUrl: String,
     val discoveredAt: Instant,
     val fetchedAt: Instant,
@@ -86,12 +97,17 @@ data class DocumentVersion(
     val parserVersion: String,
 )
 
+/** Durable snapshot of where a saved document came from. */
 data class DocumentProvenance(
     val documentId: DocumentId,
     val sourceId: SourceId,
     val discoveredUrl: String,
+    val resolvedUrl: String?,
     val discoveredAt: Instant,
     val fetchedAt: Instant,
+    val sourceNameSnapshot: String,
+    val sourceUrlSnapshot: String,
+    val sourceTypeSnapshot: String,
     val originKey: String = "${sourceId.value}|$discoveredUrl",
 )
 
