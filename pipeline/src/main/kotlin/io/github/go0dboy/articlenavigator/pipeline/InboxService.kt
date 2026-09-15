@@ -1,6 +1,7 @@
 package io.github.go0dboy.articlenavigator.pipeline
 
 import io.github.go0dboy.articlenavigator.core.data.InboxRepository
+import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.Document
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
@@ -14,6 +15,7 @@ import java.time.Clock
 
 class InboxService(
     private val repository: InboxRepository,
+    private val sourceRepository: SourceRepository,
     private val clock: Clock = Clock.systemUTC(),
 ) {
     suspend fun list(limit: Int = 100): List<InboxItem> = repository.listPending(limit)
@@ -52,12 +54,19 @@ class InboxService(
             parserVersion = PARSER_VERSION,
         )
         val provenances = origins.map { origin ->
+            val source = checkNotNull(sourceRepository.findById(origin.sourceId)) {
+                "Source ${origin.sourceId.value} missing while Inbox provenance is retained"
+            }
             DocumentProvenance(
                 documentId = documentId,
                 sourceId = origin.sourceId,
                 discoveredUrl = origin.discoveredUrl,
+                resolvedUrl = origin.resolvedUrl,
                 discoveredAt = origin.discoveredAt,
                 fetchedAt = origin.fetchedAt,
+                sourceNameSnapshot = source.name,
+                sourceUrlSnapshot = source.url,
+                sourceTypeSnapshot = source.type.name,
             )
         }
         val fingerprints = origins
