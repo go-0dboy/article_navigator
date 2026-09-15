@@ -35,6 +35,7 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":collector:api"))
     implementation(project(":collector:rss"))
+    implementation(project(":pipeline"))
     implementation(project(":scheduler:core"))
     implementation(project(":scheduler:android"))
     implementation(project(":storage:database"))
