@@ -13,12 +13,14 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        manifestPlaceholders["appLabel"] = "Article Navigator"
     }
 
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "Article Navigator Dev"
         }
     }
 
