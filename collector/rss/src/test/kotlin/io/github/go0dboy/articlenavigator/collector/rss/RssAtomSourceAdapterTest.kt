@@ -86,7 +86,8 @@ class RssAtomSourceAdapterTest {
 
         assertEquals(1, result.items.size)
         assertEquals("Atom item", result.items.single().title)
-        assertEquals("https://example.com/articles/atom-1", result.items.single().url)
+        assertEquals("https://example.com/articles/atom-1#comments", result.items.single().url)
+        assertEquals("https://example.com/articles/atom-1", result.items.single().canonicalUrl)
         assertEquals(Instant.parse("2026-09-15T09:15:00Z"), result.items.single().publishedAt)
         assertEquals("urn:uuid:atom-1", result.nextCursor.lastGuid)
     }
