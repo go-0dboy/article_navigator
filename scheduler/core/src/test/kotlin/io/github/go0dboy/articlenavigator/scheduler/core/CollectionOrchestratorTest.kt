@@ -4,14 +4,13 @@ import io.github.go0dboy.articlenavigator.collector.api.DiscoveryResult
 import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.RetryPolicy
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
-import io.github.go0dboy.articlenavigator.core.data.CollectionStateRepository
-import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
+import io.github.go0dboy.articlenavigator.core.data.CollectionCommitOutcome
+import io.github.go0dboy.articlenavigator.core.data.CollectionRepository
+import io.github.go0dboy.articlenavigator.core.data.SourceCollectionLease
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
-import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
 import io.github.go0dboy.articlenavigator.core.model.PollPolicy
-import io.github.go0dboy.articlenavigator.core.model.RawContent
 import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceCollectionState
 import io.github.go0dboy.articlenavigator.core.model.SourceCursor
@@ -116,12 +115,12 @@ class CollectionOrchestratorTest {
 
     private fun orchestrator(repos: Repositories, adapter: SourceAdapter) = CollectionOrchestrator(
         sourceRepository = repos,
-        ingestionRepository = repos,
-        stateRepository = repos,
+        collectionRepository = repos,
         adapterRegistry = SourceAdapterRegistry(listOf(adapter)),
         retryPolicy = RetryPolicy(maxAttempts = 4, initialDelay = Duration.ofSeconds(5), maxDelay = Duration.ofMinutes(1)),
         clock = clock,
         maxParallelism = 2,
+        runTokenFactory = { "test-token-${repos.nextToken++}" },
     )
 
     private fun source(
@@ -163,32 +162,119 @@ class CollectionOrchestratorTest {
         override suspend fun fetch(item: DiscoveredItem): FetchResult = error("not used")
     }
 
-    private class Repositories(initialSources: List<Source>) : SourceRepository, IngestionRepository, CollectionStateRepository {
+    private class Repositories(initialSources: List<Source>) : SourceRepository, CollectionRepository {
         val sources = initialSources.associateBy { it.id }.toMutableMap()
         val cursors = mutableMapOf<SourceId, SourceCursor>()
         val states = mutableMapOf<SourceId, SourceCollectionState>()
         val items = mutableListOf<DiscoveredItem>()
-        private val raw = mutableMapOf<DiscoveredItemId, RawContent>()
+        private val leases = mutableMapOf<SourceId, SourceCollectionLease>()
+        var nextToken: Int = 0
 
         override suspend fun upsert(source: Source) { sources[source.id] = source }
         override suspend fun findById(id: SourceId): Source? = sources[id]
-        override suspend fun findDue(now: Instant): List<Source> = sources.values.filter { it.enabled && (it.nextCheckAt == null || !it.nextCheckAt!!.isAfter(now)) }
+        override suspend fun findDue(now: Instant): List<Source> = sources.values.filter { source ->
+            val lease = leases[source.id]
+            source.enabled &&
+                (source.nextCheckAt == null || !source.nextCheckAt!!.isAfter(now)) &&
+                (lease == null || !lease.expiresAt.isAfter(now))
+        }
         override suspend fun listAll(): List<Source> = sources.values.toList()
         override suspend fun loadCursor(sourceId: SourceId): SourceCursor? = cursors[sourceId]
         override suspend fun saveCursor(cursor: SourceCursor) { cursors[cursor.sourceId] = cursor }
-        override suspend fun load(sourceId: SourceId): SourceCollectionState? = states[sourceId]
-        override suspend fun save(state: SourceCollectionState) { states[state.sourceId] = state }
-        override suspend fun upsertDiscovered(item: DiscoveredItem) { items.removeAll { it.id == item.id }; items += item }
-        override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = items.firstOrNull { it.id == id }
-        override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? = items.firstOrNull { it.sourceId == sourceId && it.url == url }
-        override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> = items
-            .filter {
-                it.status == DiscoveryStatus.DISCOVERED ||
-                    (it.status == DiscoveryStatus.FAILED && (it.nextProcessingAt == null || !it.nextProcessingAt!!.isAfter(now)))
+        override suspend fun markDue(sourceId: SourceId, at: Instant): Boolean {
+            val source = sources[sourceId] ?: return false
+            sources[sourceId] = source.copy(nextCheckAt = at)
+            return true
+        }
+
+        override suspend fun tryClaim(
+            sourceId: SourceId,
+            runToken: String,
+            now: Instant,
+            leaseExpiresAt: Instant,
+        ): SourceCollectionLease? {
+            val source = sources[sourceId]?.takeIf { it.enabled } ?: return null
+            val current = leases[sourceId]
+            if (current != null && current.expiresAt.isAfter(now)) return null
+            return SourceCollectionLease(
+                source = source,
+                cursor = cursors[sourceId],
+                previousState = states[sourceId],
+                runToken = runToken,
+                settingsRevision = source.settingsRevision,
+                expiresAt = leaseExpiresAt,
+            ).also { leases[sourceId] = it }
+        }
+
+        override suspend fun commitSuccess(
+            lease: SourceCollectionLease,
+            items: List<DiscoveredItem>,
+            cursor: SourceCursor,
+            completedAt: Instant,
+            nextCheckAt: Instant,
+            discoveredCount: Int,
+        ): CollectionCommitOutcome {
+            if (!owns(lease)) return CollectionCommitOutcome.STALE
+            items.forEach { incoming ->
+                val index = this.items.indexOfFirst { it.id == incoming.id }
+                if (index < 0) {
+                    this.items += incoming
+                } else {
+                    val existing = this.items[index]
+                    this.items[index] = existing.copy(
+                        canonicalUrl = incoming.canonicalUrl,
+                        resolvedUrl = incoming.resolvedUrl,
+                        title = incoming.title,
+                        publishedAt = incoming.publishedAt,
+                        lastSeenAt = incoming.lastSeenAt,
+                    )
+                }
             }
-            .take(limit)
-        override suspend fun storeRawContent(content: RawContent) { raw[content.discoveredItemId] = content }
-        override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = raw[id]
-        override suspend fun deleteRawContent(id: DiscoveredItemId) { raw.remove(id) }
+            cursors[lease.source.id] = cursor
+            states[lease.source.id] = SourceCollectionState(
+                sourceId = lease.source.id,
+                consecutiveFailures = 0,
+                lastAttemptAt = completedAt,
+                lastDiscoveredCount = discoveredCount,
+            )
+            sources[lease.source.id] = sources.getValue(lease.source.id).copy(
+                lastSuccessfulCheckAt = completedAt,
+                nextCheckAt = nextCheckAt,
+            )
+            leases.remove(lease.source.id)
+            return CollectionCommitOutcome.APPLIED
+        }
+
+        override suspend fun commitFailure(
+            lease: SourceCollectionLease,
+            completedAt: Instant,
+            nextCheckAt: Instant,
+            errorType: String,
+            errorMessage: String?,
+        ): CollectionCommitOutcome {
+            if (!owns(lease)) return CollectionCommitOutcome.STALE
+            val failures = (lease.previousState?.consecutiveFailures ?: 0) + 1
+            states[lease.source.id] = SourceCollectionState(
+                sourceId = lease.source.id,
+                consecutiveFailures = failures,
+                lastAttemptAt = completedAt,
+                lastErrorType = errorType,
+                lastErrorMessage = errorMessage,
+                lastDiscoveredCount = lease.previousState?.lastDiscoveredCount ?: 0,
+            )
+            sources[lease.source.id] = sources.getValue(lease.source.id).copy(nextCheckAt = nextCheckAt)
+            leases.remove(lease.source.id)
+            return CollectionCommitOutcome.APPLIED
+        }
+
+        override suspend fun release(lease: SourceCollectionLease) {
+            if (leases[lease.source.id]?.runToken == lease.runToken) leases.remove(lease.source.id)
+        }
+
+        private fun owns(lease: SourceCollectionLease): Boolean {
+            val current = leases[lease.source.id] ?: return false
+            val source = sources[lease.source.id] ?: return false
+            return current.runToken == lease.runToken && source.settingsRevision == lease.settingsRevision
+        }
     }
 }
