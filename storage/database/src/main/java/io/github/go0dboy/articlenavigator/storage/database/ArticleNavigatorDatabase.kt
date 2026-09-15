@@ -23,6 +23,7 @@ import androidx.room3.RoomDatabase
 )
 abstract class ArticleNavigatorDatabase : RoomDatabase() {
     abstract fun sourceDao(): SourceDao
+    abstract fun sourceScheduleDao(): SourceScheduleDao
     abstract fun collectionStateDao(): CollectionStateDao
     abstract fun collectionDao(): CollectionDao
     abstract fun ingestionDao(): IngestionDao
