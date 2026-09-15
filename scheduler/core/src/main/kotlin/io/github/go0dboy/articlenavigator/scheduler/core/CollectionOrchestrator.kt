@@ -5,6 +5,7 @@ import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
 import io.github.go0dboy.articlenavigator.core.data.CollectionStateRepository
 import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
+import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceCollectionState
 import io.github.go0dboy.articlenavigator.core.model.SourceId
@@ -95,7 +96,16 @@ class CollectionOrchestrator(
         return try {
             val cursor = sourceRepository.loadCursor(source.id)
             val discovery = adapter.discover(source, cursor)
-            discovery.items.forEach { ingestionRepository.upsertDiscovered(it) }
+            var newItemCount = 0
+            for (item in discovery.items) {
+                val existing = ingestionRepository.findDiscovered(source.id, item.url)
+                if (existing == null) {
+                    ingestionRepository.upsertDiscovered(item)
+                    newItemCount++
+                } else {
+                    ingestionRepository.upsertDiscovered(existing.mergeDiscoveryMetadata(item))
+                }
+            }
             sourceRepository.saveCursor(discovery.nextCursor)
             sourceRepository.upsert(
                 source.copy(
@@ -108,16 +118,22 @@ class CollectionOrchestrator(
                     sourceId = source.id,
                     consecutiveFailures = 0,
                     lastAttemptAt = now,
-                    lastDiscoveredCount = discovery.items.size,
+                    lastDiscoveredCount = newItemCount,
                 ),
             )
-            SourceCollectionResult.Success(source.id, discovery.items.size)
+            SourceCollectionResult.Success(source.id, newItemCount)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
             fail(source, existingState, now, error)
         }
     }
+
+    private fun DiscoveredItem.mergeDiscoveryMetadata(fresh: DiscoveredItem): DiscoveredItem = copy(
+        canonicalUrl = fresh.canonicalUrl ?: canonicalUrl,
+        title = fresh.title ?: title,
+        publishedAt = fresh.publishedAt ?: publishedAt,
+    )
 
     private suspend fun fail(
         source: Source,
