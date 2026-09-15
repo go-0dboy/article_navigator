@@ -23,7 +23,7 @@ import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class CollectionOrchestratorTest {
@@ -91,8 +91,26 @@ class CollectionOrchestratorTest {
     }
 
     @Test(expected = IllegalArgumentException::class)
-    fun registryRejectsAmbiguousAdapters() {
+    fun registryRejectsDuplicateAdapterKeys() {
         SourceAdapterRegistry(listOf(FakeAdapter(), FakeAdapter()))
+    }
+
+    @Test
+    fun registryAllowsSameSourceTypeWithDifferentAdapterKeys() {
+        val first = FakeAdapter(adapterType = "site-a")
+        val second = FakeAdapter(adapterType = "site-b")
+        val registry = SourceAdapterRegistry(listOf(first, second))
+
+        assertSame(first, registry.resolve(source("a", adapterType = "site-a")))
+        assertSame(second, registry.resolve(source("b", adapterType = "site-b")))
+    }
+
+    @Test
+    fun incompatibleSourceTypeDoesNotResolveByAdapterKeyAlone() {
+        val registry = SourceAdapterRegistry(listOf(FakeAdapter(adapterType = "rss-atom")))
+        val incompatible = source("rest", adapterType = "rss-atom").copy(type = SourceType.REST_API)
+
+        assertNull(registry.resolve(incompatible))
     }
 
     private fun orchestrator(repos: Repositories, adapter: SourceAdapter) = CollectionOrchestrator(
@@ -105,14 +123,18 @@ class CollectionOrchestratorTest {
         maxParallelism = 2,
     )
 
-    private fun source(id: String, unmetered: Boolean = false) = Source(
+    private fun source(
+        id: String,
+        unmetered: Boolean = false,
+        adapterType: String = "rss-atom",
+    ) = Source(
         id = SourceId(id),
         name = id,
         type = SourceType.RSS,
         url = "https://example.test/$id.xml",
         enabled = true,
         pollPolicy = PollPolicy(Duration.ofHours(1), requiresUnmeteredNetwork = unmetered),
-        adapterType = "rss-atom",
+        adapterType = adapterType,
         createdAt = now.minusSeconds(3600),
         nextCheckAt = now,
     )
@@ -120,6 +142,7 @@ class CollectionOrchestratorTest {
     private class FakeAdapter(
         private val result: DiscoveryResult? = null,
         private val error: Throwable? = null,
+        override val adapterType: String = "rss-atom",
     ) : SourceAdapter {
         override val supportedTypes = setOf(SourceType.RSS)
         override suspend fun discover(source: Source, cursor: SourceCursor?): DiscoveryResult {
@@ -130,6 +153,7 @@ class CollectionOrchestratorTest {
     }
 
     private class PerSourceAdapter(private val failing: SourceId) : SourceAdapter {
+        override val adapterType: String = "rss-atom"
         override val supportedTypes = setOf(SourceType.RSS)
         override suspend fun discover(source: Source, cursor: SourceCursor?): DiscoveryResult {
             if (source.id == failing) error("source failure")
