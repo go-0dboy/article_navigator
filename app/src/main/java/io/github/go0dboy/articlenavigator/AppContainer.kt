@@ -74,9 +74,18 @@ class AppContainer(
     private val inboxService = InboxService(inboxRepository)
 
     override suspend fun runCollection(isUnmeteredNetwork: Boolean): CollectionRunReport {
-        val report = orchestrator.run(CollectionRunContext(isUnmeteredNetwork))
-        ingestionPipeline.processReady(limit = 20)
-        return report
+        val diagnosticWasEnabled = sourceRepository.findById(SAMPLE_SOURCE_ID)?.enabled == true
+        return try {
+            val report = orchestrator.run(CollectionRunContext(isUnmeteredNetwork))
+            ingestionPipeline.processReady(limit = 20)
+            report
+        } finally {
+            if (diagnosticWasEnabled) {
+                sourceRepository.findById(SAMPLE_SOURCE_ID)?.let { source ->
+                    sourceRepository.upsert(source.copy(enabled = false))
+                }
+            }
+        }
     }
 
     suspend fun ensureSampleSource(forceDue: Boolean = false) {
@@ -112,7 +121,7 @@ class AppContainer(
         val cleanName = name.trim().ifBlank { "RSS source" }
         val canonicalUrl = UrlCanonicalizer.canonicalize(rawUrl.trim())
             ?: throw IllegalArgumentException("Нужен корректный HTTP/HTTPS URL RSS или Atom")
-        val existing = sourceRepository.listAll().firstOrNull { it.url == canonicalUrl }
+        val existing = sourceRepository.listAll().firstOrNull { it.id != SAMPLE_SOURCE_ID && it.url == canonicalUrl }
         if (existing != null) {
             sourceRepository.upsert(existing.copy(name = cleanName, enabled = true, nextCheckAt = Instant.now()))
             return existing.id
@@ -136,19 +145,19 @@ class AppContainer(
         return id
     }
 
-    suspend fun listSources(): List<Source> = sourceRepository.listAll()
+    suspend fun listSources(): List<Source> = sourceRepository.listAll().filterNot { it.id == SAMPLE_SOURCE_ID }
 
     suspend fun enqueueImmediateCollection(): UUID {
         val now = Instant.now()
         sourceRepository.listAll()
-            .filter { it.enabled }
+            .filter { it.enabled && it.id != SAMPLE_SOURCE_ID }
             .forEach { sourceRepository.upsert(it.copy(nextCheckAt = now)) }
         return CollectionWorkScheduler.runNow(context)
     }
 
     suspend fun enqueueDeviceSampleCollection(): UUID {
         ensureSampleSource(forceDue = true)
-        return enqueueImmediateCollection()
+        return CollectionWorkScheduler.runNow(context)
     }
 
     suspend fun loadInbox(): List<InboxItem> = inboxService.list()
