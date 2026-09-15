@@ -10,7 +10,7 @@ import org.junit.Test
 
 class Migration2To3Test {
     @Test
-    fun migrationAddsInboxRetryStateAndPreservesExistingProvenance() = runTest {
+    fun migrationAddsInboxRetryStatePreservesProvenanceAndSuppressesOnlyLegacySampleRows() = runTest {
         val file = Files.createTempFile("article-navigator-migration-2-3", ".db")
         Files.deleteIfExists(file)
         val connection = BundledSQLiteDriver().open(file.toString())
@@ -39,12 +39,21 @@ class Migration2To3Test {
             }
 
             connection.prepare(
-                "SELECT processingAttempts, nextProcessingAtEpochMillis, lastProcessingError FROM discovered_items WHERE id = 'item-1'",
+                "SELECT status, processingAttempts, nextProcessingAtEpochMillis, lastProcessingError FROM discovered_items WHERE id = 'item-1'",
             ).use { statement ->
                 assertTrue(statement.step())
-                assertEquals(0L, statement.getLong(0))
-                assertTrue(statement.isNull(1))
+                assertEquals("DISCOVERED", statement.getText(0))
+                assertEquals(0L, statement.getLong(1))
                 assertTrue(statement.isNull(2))
+                assertTrue(statement.isNull(3))
+            }
+
+            connection.prepare(
+                "SELECT status, processingAttempts FROM discovered_items WHERE id = 'legacy-device-item'",
+            ).use { statement ->
+                assertTrue(statement.step())
+                assertEquals("PROCESSED", statement.getText(0))
+                assertEquals(0L, statement.getLong(1))
             }
         } finally {
             connection.close()
@@ -132,7 +141,15 @@ class Migration2To3Test {
         )
         execute(
             connection,
+            "INSERT INTO sources VALUES ('phase3-sample-rss','Phase 3 sample','RSS','https://example.test/device.xml',1,900,0,'rss-atom','{}',1,NULL,1)",
+        )
+        execute(
+            connection,
             "INSERT INTO discovered_items VALUES ('item-1','source-1','https://example.test/article','https://example.test/article','Article',NULL,10,NULL,'DISCOVERED',NULL)",
+        )
+        execute(
+            connection,
+            "INSERT INTO discovered_items VALUES ('legacy-device-item','phase3-sample-rss','https://example.test/legacy','https://example.test/legacy','Legacy diagnostic',NULL,11,NULL,'DISCOVERED',NULL)",
         )
         execute(
             connection,
