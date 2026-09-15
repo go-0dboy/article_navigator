@@ -8,7 +8,6 @@ import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceCollectionState
 import io.github.go0dboy.articlenavigator.core.model.SourceId
-import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -37,17 +36,23 @@ data class CollectionRunReport(val results: List<SourceCollectionResult>) {
     val skipped: Int get() = results.count { it is SourceCollectionResult.Skipped }
 }
 
+/**
+ * Resolves the concrete collector by the stable adapter key persisted on Source.
+ * SourceType is then validated by the adapter itself. This allows many site-specific
+ * adapters to share a broad SourceType without making the registry ambiguous.
+ */
 class SourceAdapterRegistry(adapters: List<SourceAdapter>) {
-    private val byType: Map<SourceType, SourceAdapter>
+    private val byAdapterType: Map<String, SourceAdapter>
 
     init {
-        val assignments = adapters.flatMap { adapter -> adapter.supportedTypes.map { type -> type to adapter } }
-        val duplicates = assignments.groupBy { it.first }.filterValues { it.size > 1 }.keys
+        require(adapters.all { it.adapterType.isNotBlank() }) { "Source adapter type must not be blank" }
+        val duplicates = adapters.groupBy { it.adapterType }.filterValues { it.size > 1 }.keys
         require(duplicates.isEmpty()) { "Multiple adapters registered for: $duplicates" }
-        byType = assignments.toMap()
+        byAdapterType = adapters.associateBy { it.adapterType }
     }
 
-    fun resolve(type: SourceType): SourceAdapter? = byType[type]
+    fun resolve(source: Source): SourceAdapter? =
+        byAdapterType[source.adapterType]?.takeIf { it.supports(source) }
 }
 
 class CollectionOrchestrator(
@@ -79,8 +84,13 @@ class CollectionOrchestrator(
         }
 
         val existingState = stateRepository.load(source.id) ?: SourceCollectionState(source.id)
-        val adapter = adapterRegistry.resolve(source.type)
-            ?: return fail(source, existingState, now, IllegalStateException("No adapter for ${source.type}"))
+        val adapter = adapterRegistry.resolve(source)
+            ?: return fail(
+                source,
+                existingState,
+                now,
+                IllegalStateException("No compatible adapter '${source.adapterType}' for ${source.type}"),
+            )
 
         return try {
             val cursor = sourceRepository.loadCursor(source.id)
