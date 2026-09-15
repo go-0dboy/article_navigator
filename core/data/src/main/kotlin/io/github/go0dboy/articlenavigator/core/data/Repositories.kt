@@ -23,6 +23,7 @@ interface SourceRepository {
     suspend fun upsert(source: Source)
     suspend fun findById(id: SourceId): Source?
     suspend fun findDue(now: Instant): List<Source>
+    suspend fun listAll(): List<Source>
     suspend fun loadCursor(sourceId: SourceId): SourceCursor?
     suspend fun saveCursor(cursor: SourceCursor)
 }
@@ -51,19 +52,12 @@ interface InboxRepository {
     suspend fun findByContentHash(contentHash: String): InboxItem?
     suspend fun origins(id: InboxItemId): List<InboxOrigin>
 
-    /**
-     * Removes the full Inbox body while retaining compact fingerprints and marking
-     * all contributing discoveries processed. The operation must be transactional.
-     */
     suspend fun discard(
         id: InboxItemId,
         disposition: ContentDisposition,
         fingerprints: List<SeenFingerprint>,
     )
 
-    /**
-     * Promotes one pending Inbox item into durable Knowledge atomically.
-     */
     suspend fun save(
         id: InboxItemId,
         document: Document,
