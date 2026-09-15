@@ -1,6 +1,7 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
 import androidx.room3.Entity
+import androidx.room3.Index
 import androidx.room3.PrimaryKey
 
 @Entity(tableName = "sources")
@@ -29,7 +30,30 @@ data class SourceCursorEntity(
     val lastCheckedAtEpochMillis: Long?,
 )
 
-@Entity(tableName = "documents")
+@Entity(
+    tableName = "discovered_items",
+    indices = [
+        Index(value = ["sourceId", "url"], unique = true),
+        Index(value = ["sourceId", "canonicalUrl"]),
+    ],
+)
+data class DiscoveredItemEntity(
+    @PrimaryKey val id: String,
+    val sourceId: String,
+    val url: String,
+    val canonicalUrl: String?,
+    val title: String?,
+    val publishedAtEpochMillis: Long?,
+    val discoveredAtEpochMillis: Long,
+    val contentHash: String?,
+    val status: String,
+    val relevanceScore: Double?,
+)
+
+@Entity(
+    tableName = "documents",
+    indices = [Index(value = ["sourceId", "canonicalUrl"], unique = true)],
+)
 data class DocumentEntity(
     @PrimaryKey val id: String,
     val sourceId: String,

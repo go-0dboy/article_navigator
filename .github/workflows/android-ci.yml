@@ -39,6 +39,22 @@ jobs:
       - name: Unit tests
         run: gradle test --stacktrace
 
+      - name: Upload Room schema
+        uses: actions/upload-artifact@v4
+        with:
+          name: room-schema
+          path: storage/database/schemas
+          if-no-files-found: error
+
+      - name: Verify Room schema snapshot
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain -- storage/database/schemas)" ]; then
+            echo "Room schema changed or is not committed:"
+            git status --short -- storage/database/schemas
+            exit 1
+          fi
+
       - name: Android lint
         run: gradle lint --stacktrace
 
