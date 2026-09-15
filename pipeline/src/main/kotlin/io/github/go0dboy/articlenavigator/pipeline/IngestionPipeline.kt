@@ -117,8 +117,9 @@ class IngestionPipeline(
                 ),
             )
 
+            val extractionBaseUrl = fetched.resolvedUrl ?: canonicalUrl
             val extracted = try {
-                extractor.extract(fetched.body, fetched.contentType, canonicalUrl)
+                extractor.extract(fetched.body, fetched.contentType, extractionBaseUrl)
             } catch (error: UnsupportedContentTypeException) {
                 return skip(item, error.message ?: "Unsupported content type")
             } catch (error: IllegalArgumentException) {
@@ -128,6 +129,7 @@ class IngestionPipeline(
             val contentHash = sha256(extracted.normalizedText)
             val fetchedItem = item.copy(
                 canonicalUrl = canonicalUrl,
+                resolvedUrl = fetched.resolvedUrl ?: item.resolvedUrl,
                 contentHash = contentHash,
                 status = DiscoveryStatus.FETCHED,
                 nextProcessingAt = null,
@@ -139,6 +141,7 @@ class IngestionPipeline(
                 ?: item.title?.takeIf { it.isNotBlank() }
                 ?: canonicalUrl
 
+            // Explicit policy: merge only on exact canonical URL or exact normalized-text SHA-256.
             val existingDocument = knowledgeRepository.findByCanonicalUrl(canonicalUrl)
                 ?: knowledgeRepository.findByContentHash(contentHash)
             if (existingDocument != null) {
@@ -148,8 +151,12 @@ class IngestionPipeline(
                         documentId = existingDocument.id,
                         sourceId = item.sourceId,
                         discoveredUrl = item.url,
+                        resolvedUrl = fetched.resolvedUrl,
                         discoveredAt = item.discoveredAt,
                         fetchedAt = fetchedAt,
+                        sourceNameSnapshot = source.name,
+                        sourceUrlSnapshot = source.url,
+                        sourceTypeSnapshot = source.type.name,
                     ),
                     fingerprint = SeenFingerprint(
                         canonicalUrlHash = canonicalHash,
@@ -173,6 +180,7 @@ class IngestionPipeline(
                         discoveredItemId = item.id,
                         sourceId = item.sourceId,
                         discoveredUrl = item.url,
+                        resolvedUrl = fetched.resolvedUrl,
                         canonicalUrl = canonicalUrl,
                         discoveredAt = item.discoveredAt,
                         fetchedAt = fetchedAt,
@@ -198,6 +206,7 @@ class IngestionPipeline(
                     discoveredItemId = item.id,
                     sourceId = item.sourceId,
                     discoveredUrl = item.url,
+                    resolvedUrl = fetched.resolvedUrl,
                     canonicalUrl = canonicalUrl,
                     discoveredAt = item.discoveredAt,
                     fetchedAt = fetchedAt,
@@ -206,12 +215,12 @@ class IngestionPipeline(
             Outcome.ADDED
         } catch (error: CancellationException) {
             throw error
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
             fail(item, now, error)
         }
     }
 
-    private suspend fun fail(item: DiscoveredItem, now: Instant, error: Throwable): Outcome {
+    private suspend fun fail(item: DiscoveredItem, now: Instant, error: Exception): Outcome {
         val attempts = item.processingAttempts + 1
         val multiplier = 1L shl min(attempts - 1, 10)
         val delay = retryBaseDelay.multipliedBy(multiplier).coerceAtMost(retryMaxDelay)
@@ -241,7 +250,7 @@ class IngestionPipeline(
     private fun isRetryableHttpStatus(statusCode: Int): Boolean =
         statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
 
-    private fun errorDescription(error: Throwable): String =
+    private fun errorDescription(error: Exception): String =
         (error.message ?: error::class.java.simpleName).take(500)
 
     private fun Duration.coerceAtMost(other: Duration): Duration = if (this > other) other else this
