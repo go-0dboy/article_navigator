@@ -1,0 +1,5 @@
+Phase 4 article three
+
+Every saved material keeps provenance: the source, original URL, discovery time and fetch time. The goal is that years later the user can find a remembered fact and also see where it originally came from.
+
+This fixture verifies the provenance-oriented design of Article Navigator.
