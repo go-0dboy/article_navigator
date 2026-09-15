@@ -78,12 +78,35 @@ internal fun SourceCollectionStateEntity.toDomain() = SourceCollectionState(
 )
 
 internal fun DiscoveredItem.toEntity() = DiscoveredItemEntity(
-    id.value, sourceId.value, url, canonicalUrl, title, publishedAt?.toEpochMilli(), discoveredAt.toEpochMilli(), contentHash, status.name, relevanceScore,
+    id = id.value,
+    sourceId = sourceId.value,
+    url = url,
+    canonicalUrl = canonicalUrl,
+    title = title,
+    publishedAtEpochMillis = publishedAt?.toEpochMilli(),
+    discoveredAtEpochMillis = discoveredAt.toEpochMilli(),
+    contentHash = contentHash,
+    status = status.name,
+    relevanceScore = relevanceScore,
+    processingAttempts = processingAttempts,
+    nextProcessingAtEpochMillis = nextProcessingAt?.toEpochMilli(),
+    lastProcessingError = lastProcessingError,
 )
 
 internal fun DiscoveredItemEntity.toDomain() = DiscoveredItem(
-    DiscoveredItemId(id), SourceId(sourceId), url, canonicalUrl, title, publishedAtEpochMillis?.let(Instant::ofEpochMilli),
-    Instant.ofEpochMilli(discoveredAtEpochMillis), contentHash, DiscoveryStatus.valueOf(status), relevanceScore,
+    id = DiscoveredItemId(id),
+    sourceId = SourceId(sourceId),
+    url = url,
+    canonicalUrl = canonicalUrl,
+    title = title,
+    publishedAt = publishedAtEpochMillis?.let(Instant::ofEpochMilli),
+    discoveredAt = Instant.ofEpochMilli(discoveredAtEpochMillis),
+    contentHash = contentHash,
+    status = DiscoveryStatus.valueOf(status),
+    relevanceScore = relevanceScore,
+    processingAttempts = processingAttempts,
+    nextProcessingAt = nextProcessingAtEpochMillis?.let(Instant::ofEpochMilli),
+    lastProcessingError = lastProcessingError,
 )
 
 internal fun RawContent.toEntity() = RawContentEntity(
