@@ -1,9 +1,12 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
+import io.github.go0dboy.articlenavigator.core.data.CollectionCommitOutcome
+import io.github.go0dboy.articlenavigator.core.data.CollectionRepository
 import io.github.go0dboy.articlenavigator.core.data.CollectionStateRepository
 import io.github.go0dboy.articlenavigator.core.data.InboxRepository
 import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
 import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
+import io.github.go0dboy.articlenavigator.core.data.SourceCollectionLease
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
@@ -24,9 +27,11 @@ import io.github.go0dboy.articlenavigator.core.model.SourceId
 import java.time.Instant
 
 class RoomSourceRepository(private val dao: SourceDao) : SourceRepository {
-    override suspend fun upsert(source: Source) = dao.upsert(source.toEntity())
+    override suspend fun upsert(source: Source) = dao.saveUserSource(source.toEntity())
     override suspend fun findById(id: SourceId): Source? = dao.findById(id.value)?.toDomain()
     override suspend fun findDue(now: Instant): List<Source> = dao.findDue(now.toEpochMilli()).map { it.toDomain() }
+    override suspend fun findDue(now: Instant, limit: Int): List<Source> =
+        dao.findDue(now.toEpochMilli(), limit).map { it.toDomain() }
     override suspend fun listAll(): List<Source> = dao.listAll().map { it.toDomain() }
     override suspend fun loadCursor(sourceId: SourceId): SourceCursor? = dao.findCursor(sourceId.value)?.toDomain()
     override suspend fun saveCursor(cursor: SourceCursor) = dao.upsertCursor(cursor.toEntity())
@@ -35,6 +40,83 @@ class RoomSourceRepository(private val dao: SourceDao) : SourceRepository {
 class RoomCollectionStateRepository(private val dao: CollectionStateDao) : CollectionStateRepository {
     override suspend fun load(sourceId: SourceId): SourceCollectionState? = dao.findBySourceId(sourceId.value)?.toDomain()
     override suspend fun save(state: SourceCollectionState) = dao.upsert(state.toEntity())
+}
+
+class RoomCollectionRepository(private val dao: CollectionDao) : CollectionRepository {
+    override suspend fun tryClaim(
+        sourceId: SourceId,
+        runToken: String,
+        now: Instant,
+        leaseExpiresAt: Instant,
+    ): SourceCollectionLease? {
+        if (dao.claim(sourceId.value, runToken, now.toEpochMilli(), leaseExpiresAt.toEpochMilli()) != 1) return null
+        val source = checkNotNull(dao.source(sourceId.value)) { "Claimed source disappeared: ${sourceId.value}" }.toDomain()
+        return SourceCollectionLease(
+            source = source,
+            cursor = dao.cursor(sourceId.value)?.toDomain(),
+            previousState = dao.state(sourceId.value)?.toDomain(),
+            runToken = runToken,
+            settingsRevision = source.settingsRevision,
+            expiresAt = leaseExpiresAt,
+        )
+    }
+
+    override suspend fun commitSuccess(
+        lease: SourceCollectionLease,
+        items: List<DiscoveredItem>,
+        cursor: SourceCursor,
+        completedAt: Instant,
+        nextCheckAt: Instant,
+        discoveredCount: Int,
+    ): CollectionCommitOutcome {
+        val applied = dao.commitSuccess(
+            sourceId = lease.source.id.value,
+            runToken = lease.runToken,
+            settingsRevision = lease.settingsRevision,
+            items = items.map { it.toEntity() },
+            nextCursor = cursor.toEntity(),
+            state = SourceCollectionStateEntity(
+                sourceId = lease.source.id.value,
+                consecutiveFailures = 0,
+                lastAttemptAtEpochMillis = completedAt.toEpochMilli(),
+                lastErrorType = null,
+                lastErrorMessage = null,
+                lastDiscoveredCount = discoveredCount,
+            ),
+            completedAtEpochMillis = completedAt.toEpochMilli(),
+            nextCheckAtEpochMillis = nextCheckAt.toEpochMilli(),
+        )
+        return if (applied) CollectionCommitOutcome.APPLIED else CollectionCommitOutcome.STALE
+    }
+
+    override suspend fun commitFailure(
+        lease: SourceCollectionLease,
+        completedAt: Instant,
+        nextCheckAt: Instant,
+        errorType: String,
+        errorMessage: String?,
+    ): CollectionCommitOutcome {
+        val previous = lease.previousState
+        val applied = dao.commitFailure(
+            sourceId = lease.source.id.value,
+            runToken = lease.runToken,
+            settingsRevision = lease.settingsRevision,
+            state = SourceCollectionStateEntity(
+                sourceId = lease.source.id.value,
+                consecutiveFailures = (previous?.consecutiveFailures ?: 0) + 1,
+                lastAttemptAtEpochMillis = completedAt.toEpochMilli(),
+                lastErrorType = errorType,
+                lastErrorMessage = errorMessage?.take(2_000),
+                lastDiscoveredCount = previous?.lastDiscoveredCount ?: 0,
+            ),
+            nextCheckAtEpochMillis = nextCheckAt.toEpochMilli(),
+        )
+        return if (applied) CollectionCommitOutcome.APPLIED else CollectionCommitOutcome.STALE
+    }
+
+    override suspend fun release(lease: SourceCollectionLease) {
+        dao.release(lease.source.id.value, lease.runToken)
+    }
 }
 
 class RoomIngestionRepository(private val dao: IngestionDao) : IngestionRepository {
