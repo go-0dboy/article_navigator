@@ -51,12 +51,20 @@ class IngestionHttpRetrySemanticsTest {
     )
 
     @Test
-    fun retryAfterSecondsOverridesLocalBackoffFor429And503() = runTest {
-        listOf(429 to 120L, 503 to 45L).forEach { (status, seconds) ->
+    fun retryAfterSecondsOverridesLocalBackoffOnlyWhenLonger() = runTest {
+        listOf(429 to 1200L, 503 to 1800L).forEach { (status, seconds) ->
             val stored = runResponse(status, mapOf("Retry-After" to seconds.toString()))
             assertEquals(DiscoveryStatus.FAILED, stored.status)
             assertEquals(now.plusSeconds(seconds), stored.nextProcessingAt)
         }
+    }
+
+    @Test
+    fun shortRetryAfterDoesNotReduceLocalBackoff() = runTest {
+        val stored = runResponse(503, mapOf("Retry-After" to "45"))
+
+        assertEquals(DiscoveryStatus.FAILED, stored.status)
+        assertEquals(now.plus(Duration.ofMinutes(15)), stored.nextProcessingAt)
     }
 
     @Test
