@@ -1,0 +1,5 @@
+Phase 4 article one
+
+Article Navigator discovered this material through RSS, downloaded its body, normalized the text and placed it into the Inbox.
+
+This fixture verifies the first ingestion path on a real Android device.
