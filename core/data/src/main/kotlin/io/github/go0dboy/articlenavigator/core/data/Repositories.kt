@@ -27,6 +27,8 @@ interface SourceRepository {
     suspend fun listAll(): List<Source>
     suspend fun loadCursor(sourceId: SourceId): SourceCursor?
     suspend fun saveCursor(cursor: SourceCursor)
+    /** Operational update only: does not mutate user settings or settingsRevision. */
+    suspend fun markDue(sourceId: SourceId, at: Instant): Boolean
 }
 
 interface CollectionStateRepository {
