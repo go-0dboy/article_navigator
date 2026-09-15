@@ -8,6 +8,9 @@ import io.github.go0dboy.articlenavigator.core.model.Document
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
 import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
+import io.github.go0dboy.articlenavigator.core.model.InboxItem
+import io.github.go0dboy.articlenavigator.core.model.InboxItemId
+import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
 import io.github.go0dboy.articlenavigator.core.model.PollPolicy
 import io.github.go0dboy.articlenavigator.core.model.RawContent
 import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
@@ -90,6 +93,48 @@ internal fun RawContent.toEntity() = RawContentEntity(
 internal fun RawContentEntity.toDomain() = RawContent(
     DiscoveredItemId(discoveredItemId), mimeType, payload, Instant.ofEpochMilli(fetchedAtEpochMillis), httpStatus,
     expiresAtEpochMillis?.let(Instant::ofEpochMilli),
+)
+
+internal fun InboxItem.toEntity() = InboxItemEntity(
+    id.value,
+    canonicalUrl,
+    title,
+    publishedAt?.toEpochMilli(),
+    normalizedText,
+    contentHash,
+    createdAt.toEpochMilli(),
+    updatedAt.toEpochMilli(),
+)
+
+internal fun InboxItemEntity.toDomain() = InboxItem(
+    InboxItemId(id),
+    canonicalUrl,
+    title,
+    publishedAtEpochMillis?.let(Instant::ofEpochMilli),
+    normalizedText,
+    contentHash,
+    Instant.ofEpochMilli(createdAtEpochMillis),
+    Instant.ofEpochMilli(updatedAtEpochMillis),
+)
+
+internal fun InboxOrigin.toEntity() = InboxOriginEntity(
+    inboxItemId.value,
+    discoveredItemId.value,
+    sourceId.value,
+    discoveredUrl,
+    canonicalUrl,
+    discoveredAt.toEpochMilli(),
+    fetchedAt.toEpochMilli(),
+)
+
+internal fun InboxOriginEntity.toDomain() = InboxOrigin(
+    InboxItemId(inboxItemId),
+    DiscoveredItemId(discoveredItemId),
+    SourceId(sourceId),
+    discoveredUrl,
+    canonicalUrl,
+    Instant.ofEpochMilli(discoveredAtEpochMillis),
+    Instant.ofEpochMilli(fetchedAtEpochMillis),
 )
 
 internal fun Document.toEntity() = DocumentEntity(
