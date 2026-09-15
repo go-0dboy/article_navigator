@@ -38,7 +38,7 @@ class CollectionWorkSchedulerTest {
         val constraints = CollectionWorkScheduler.periodicConstraints()
 
         assertEquals(NetworkType.CONNECTED, constraints.requiredNetworkType)
-        assertTrue(constraints.requiresBatteryNotLow)
+        assertTrue(constraints.requiresBatteryNotLow())
     }
 
     @Test
@@ -46,7 +46,7 @@ class CollectionWorkSchedulerTest {
         val constraints = CollectionWorkScheduler.immediateConstraints()
 
         assertEquals(NetworkType.CONNECTED, constraints.requiredNetworkType)
-        assertFalse(constraints.requiresBatteryNotLow)
+        assertFalse(constraints.requiresBatteryNotLow())
     }
 
     @Test
