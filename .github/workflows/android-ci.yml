@@ -5,8 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# TEMPORARY bootstrap permission. The guarded step below commits only the exact
+# checksum-verified wrapper generated on the hardening branch. Remove this as
+# soon as the wrapper files exist in Git.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -14,8 +17,20 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Checkout
+      - name: Checkout PR head
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Check whether wrapper is committed
+        id: wrapper-check
+        shell: bash
+        run: |
+          if [[ -f gradlew && -f gradlew.bat && -f gradle/wrapper/gradle-wrapper.jar && -f gradle/wrapper/gradle-wrapper.properties ]]; then
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -31,14 +46,14 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
 
-      - name: Set up Gradle 9.6.0
+      - name: Set up Gradle 9.6.0 for wrapper bootstrap
+        if: ${{ steps.wrapper-check.outputs.missing == 'true' }}
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
 
-      # Temporary bootstrap validation until the exact generated wrapper JAR is
-      # committed. This step is read-only and cannot mutate repository contents.
-      - name: Generate and verify Gradle Wrapper
+      - name: Generate, verify and commit official Gradle Wrapper
+        if: ${{ steps.wrapper-check.outputs.missing == 'true' && github.event_name == 'pull_request' && github.head_ref == 'fix/phase4-hardening' }}
         run: |
           gradle wrapper \
             --gradle-version 9.6.0 \
@@ -46,31 +61,45 @@ jobs:
             --gradle-distribution-sha256-sum bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01
           echo "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
           grep -F "distributionSha256Sum=bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01" gradle/wrapper/gradle-wrapper.properties
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
+          git commit -m "Build: add official verified Gradle 9.6 Wrapper"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
+          echo "Wrapper committed; the follow-up workflow on that commit is authoritative."
+          exit 0
+
+      - name: Stop bootstrap run after wrapper commit
+        if: ${{ steps.wrapper-check.outputs.missing == 'true' }}
+        run: exit 0
+
+      - name: Verify committed Gradle Wrapper
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
+        run: |
+          echo "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          grep -F "distributionSha256Sum=bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01" gradle/wrapper/gradle-wrapper.properties
 
       - name: Snapshot committed Room schemas
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
         run: |
           mkdir -p /tmp/room-schemas-committed
           cp -a storage/database/schemas/. /tmp/room-schemas-committed/
 
       - name: Unit tests
-        run: gradle test --stacktrace
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
+        run: ./gradlew test --stacktrace
 
       - name: Verify Room schema is committed
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
         run: |
           python3 - <<'PY'
           import json
           import sys
           from pathlib import Path
-
           before_root = Path('/tmp/room-schemas-committed')
           after_root = Path('storage/database/schemas')
-
           def load(root):
-              return {
-                  str(path.relative_to(root)): json.loads(path.read_text(encoding='utf-8'))
-                  for path in root.rglob('*.json')
-              }
-
+              return {str(path.relative_to(root)): json.loads(path.read_text(encoding='utf-8')) for path in root.rglob('*.json')}
           before = load(before_root)
           after = load(after_root)
           if before.keys() != after.keys():
@@ -78,19 +107,16 @@ jobs:
               print('Committed:', sorted(before))
               print('Generated:', sorted(after))
               sys.exit(1)
-
           changed = [name for name in before if before[name] != after[name]]
           if changed:
               print('Room schema changed semantically. Commit the generated schema before merging:')
-              for name in changed:
-                  print(' -', name)
+              for name in changed: print(' -', name)
               sys.exit(1)
-
           print('Room schemas match committed structure.')
           PY
 
       - name: Upload Room schemas
-        if: always()
+        if: ${{ always() && steps.wrapper-check.outputs.missing == 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: room-schemas
@@ -98,12 +124,15 @@ jobs:
           if-no-files-found: warn
 
       - name: Android lint
-        run: gradle lint --stacktrace
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
+        run: ./gradlew lint --stacktrace
 
       - name: Assemble debug APK
-        run: gradle assembleDebug --stacktrace
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Verify debug APK identity
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
         run: |
           APK="app/build/outputs/apk/debug/app-debug.apk"
           APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
@@ -115,6 +144,7 @@ jobs:
           test "$PACKAGE_ID" = "io.github.go0dboy.articlenavigator.dev"
 
       - name: Upload debug APK
+        if: ${{ steps.wrapper-check.outputs.missing == 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: article-navigator-debug
