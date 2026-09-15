@@ -12,6 +12,7 @@ import io.github.go0dboy.articlenavigator.core.model.PollPolicy
 import io.github.go0dboy.articlenavigator.core.model.RawContent
 import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
 import io.github.go0dboy.articlenavigator.core.model.Source
+import io.github.go0dboy.articlenavigator.core.model.SourceCollectionState
 import io.github.go0dboy.articlenavigator.core.model.SourceCursor
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import io.github.go0dboy.articlenavigator.core.model.SourceType
@@ -53,6 +54,24 @@ internal fun SourceCursor.toEntity() = SourceCursorEntity(
 
 internal fun SourceCursorEntity.toDomain() = SourceCursor(
     SourceId(sourceId), etag, lastModified, opaqueCursor, lastGuid, lastCheckedAtEpochMillis?.let(Instant::ofEpochMilli),
+)
+
+internal fun SourceCollectionState.toEntity() = SourceCollectionStateEntity(
+    sourceId.value,
+    consecutiveFailures,
+    lastAttemptAt?.toEpochMilli(),
+    lastErrorType,
+    lastErrorMessage,
+    lastDiscoveredCount,
+)
+
+internal fun SourceCollectionStateEntity.toDomain() = SourceCollectionState(
+    SourceId(sourceId),
+    consecutiveFailures,
+    lastAttemptAtEpochMillis?.let(Instant::ofEpochMilli),
+    lastErrorType,
+    lastErrorMessage,
+    lastDiscoveredCount,
 )
 
 internal fun DiscoveredItem.toEntity() = DiscoveredItemEntity(

@@ -10,6 +10,7 @@ import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
 import io.github.go0dboy.articlenavigator.core.model.RawContent
 import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
 import io.github.go0dboy.articlenavigator.core.model.Source
+import io.github.go0dboy.articlenavigator.core.model.SourceCollectionState
 import io.github.go0dboy.articlenavigator.core.model.SourceCursor
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import java.time.Instant
@@ -20,6 +21,11 @@ interface SourceRepository {
     suspend fun findDue(now: Instant): List<Source>
     suspend fun loadCursor(sourceId: SourceId): SourceCursor?
     suspend fun saveCursor(cursor: SourceCursor)
+}
+
+interface CollectionStateRepository {
+    suspend fun load(sourceId: SourceId): SourceCollectionState?
+    suspend fun save(state: SourceCollectionState)
 }
 
 interface IngestionRepository {
