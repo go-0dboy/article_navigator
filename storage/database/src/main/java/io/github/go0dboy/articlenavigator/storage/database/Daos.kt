@@ -46,8 +46,8 @@ interface IngestionDao {
     @Query("SELECT * FROM discovered_items WHERE sourceId = :sourceId AND url = :url LIMIT 1")
     suspend fun findDiscovered(sourceId: String, url: String): DiscoveredItemEntity?
 
-    @Query("SELECT * FROM discovered_items WHERE status = :status ORDER BY discoveredAtEpochMillis LIMIT :limit")
-    suspend fun findDiscoveredByStatus(status: String, limit: Int): List<DiscoveredItemEntity>
+    @Query("SELECT * FROM discovered_items WHERE status IN ('DISCOVERED', 'FAILED') AND (nextProcessingAtEpochMillis IS NULL OR nextProcessingAtEpochMillis <= :nowEpochMillis) ORDER BY discoveredAtEpochMillis LIMIT :limit")
+    suspend fun findReadyForProcessing(nowEpochMillis: Long, limit: Int): List<DiscoveredItemEntity>
 
     @Query("SELECT COUNT(*) FROM discovered_items")
     suspend fun countDiscovered(): Int
@@ -100,7 +100,7 @@ interface InboxDao {
     @Query("SELECT * FROM inbox_origins WHERE inboxItemId = :inboxItemId ORDER BY discoveredAtEpochMillis")
     suspend fun origins(inboxItemId: String): List<InboxOriginEntity>
 
-    @Query("UPDATE discovered_items SET status = 'PROCESSED' WHERE id IN (:ids)")
+    @Query("UPDATE discovered_items SET status = 'PROCESSED', nextProcessingAtEpochMillis = NULL, lastProcessingError = NULL WHERE id IN (:ids)")
     suspend fun markDiscoveriesProcessed(ids: List<String>)
 
     @Query("DELETE FROM raw_contents WHERE discoveredItemId IN (:ids)")
@@ -205,7 +205,7 @@ interface DocumentDao {
     @Query("UPDATE documents SET disposition = :disposition, updatedAtEpochMillis = :updatedAtEpochMillis WHERE id = :id")
     suspend fun updateDisposition(id: String, disposition: String, updatedAtEpochMillis: Long)
 
-    @Query("UPDATE discovered_items SET status = 'PROCESSED' WHERE id = :id")
+    @Query("UPDATE discovered_items SET status = 'PROCESSED', nextProcessingAtEpochMillis = NULL, lastProcessingError = NULL WHERE id = :id")
     suspend fun markDiscoveryProcessed(id: String)
 
     @Query("DELETE FROM raw_contents WHERE discoveredItemId = :id")
