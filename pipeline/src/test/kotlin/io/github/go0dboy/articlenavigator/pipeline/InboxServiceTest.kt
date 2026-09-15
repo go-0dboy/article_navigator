@@ -1,7 +1,6 @@
 package io.github.go0dboy.articlenavigator.pipeline
 
 import io.github.go0dboy.articlenavigator.core.data.InboxRepository
-import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
 import io.github.go0dboy.articlenavigator.core.model.Document
@@ -10,14 +9,10 @@ import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
-import io.github.go0dboy.articlenavigator.core.model.PollPolicy
 import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
-import io.github.go0dboy.articlenavigator.core.model.Source
-import io.github.go0dboy.articlenavigator.core.model.SourceCursor
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Clock
-import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
@@ -39,16 +34,26 @@ class InboxServiceTest {
     )
 
     @Test
-    fun `save preserves every origin and creates saved fingerprints`() = runTest {
+    fun `save preserves every ingestion-time origin snapshot and creates saved fingerprints`() = runTest {
         val repository = CapturingInboxRepository(item).apply {
-            storedOrigins += origin("source-a", "discovery-a", "https://feed-a.test/article", now.minusSeconds(30))
-            storedOrigins += origin("source-b", "discovery-b", "https://feed-b.test/article", now.minusSeconds(10))
+            storedOrigins += origin(
+                source = "source-a",
+                discovery = "discovery-a",
+                url = "https://feed-a.test/article",
+                fetchedAt = now.minusSeconds(30),
+                sourceName = "Feed A at ingestion",
+                sourceUrl = "https://feed-a.test/feed.xml",
+            )
+            storedOrigins += origin(
+                source = "source-b",
+                discovery = "discovery-b",
+                url = "https://feed-b.test/article",
+                fetchedAt = now.minusSeconds(10),
+                sourceName = "Feed B at ingestion",
+                sourceUrl = "https://feed-b.test/feed.xml",
+            )
         }
-        val sourceRepository = InboxTestSourceRepository(
-            source("source-a", "Feed A", "https://feed-a.test/feed.xml"),
-            source("source-b", "Feed B", "https://feed-b.test/feed.xml"),
-        )
-        val service = InboxService(repository, sourceRepository, clock)
+        val service = InboxService(repository, clock)
 
         val documentId = service.save(item.id)
 
@@ -63,7 +68,14 @@ class InboxServiceTest {
         assertEquals(now.minusSeconds(10), saved.version.fetchedAt)
         assertEquals(2, saved.provenances.size)
         assertEquals(setOf(SourceId("source-a"), SourceId("source-b")), saved.provenances.map { it.sourceId }.toSet())
-        assertEquals(setOf("Feed A", "Feed B"), saved.provenances.map { it.sourceNameSnapshot }.toSet())
+        assertEquals(
+            setOf("Feed A at ingestion", "Feed B at ingestion"),
+            saved.provenances.map { it.sourceNameSnapshot }.toSet(),
+        )
+        assertEquals(
+            setOf("https://feed-a.test/feed.xml", "https://feed-b.test/feed.xml"),
+            saved.provenances.map { it.sourceUrlSnapshot }.toSet(),
+        )
         assertEquals(setOf(SourceType.RSS.name), saved.provenances.map { it.sourceTypeSnapshot }.toSet())
         assertEquals(2, saved.fingerprints.size)
         assertEquals(setOf(ContentDisposition.SAVED), saved.fingerprints.map { it.disposition }.toSet())
@@ -76,11 +88,7 @@ class InboxServiceTest {
             storedOrigins += origin("source-a", "discovery-a", "https://feed-a.test/article", now.minusSeconds(20))
             storedOrigins += origin("source-b", "discovery-b", "https://feed-b.test/article", now.minusSeconds(10))
         }
-        val sourceRepository = InboxTestSourceRepository(
-            source("source-a", "Feed A", "https://feed-a.test/feed.xml"),
-            source("source-b", "Feed B", "https://feed-b.test/feed.xml"),
-        )
-        val service = InboxService(repository, sourceRepository, clock)
+        val service = InboxService(repository, clock)
 
         service.reject(item.id)
 
@@ -93,18 +101,14 @@ class InboxServiceTest {
         assertEquals(null, repository.saved)
     }
 
-    private fun source(id: String, name: String, url: String) = Source(
-        id = SourceId(id),
-        name = name,
-        type = SourceType.RSS,
-        url = url,
-        enabled = true,
-        pollPolicy = PollPolicy(Duration.ofHours(1)),
-        adapterType = "rss-atom",
-        createdAt = now.minusSeconds(3600),
-    )
-
-    private fun origin(source: String, discovery: String, url: String, fetchedAt: Instant) = InboxOrigin(
+    private fun origin(
+        source: String,
+        discovery: String,
+        url: String,
+        fetchedAt: Instant,
+        sourceName: String = "Source snapshot",
+        sourceUrl: String = "https://source.test/feed.xml",
+    ) = InboxOrigin(
         inboxItemId = item.id,
         discoveredItemId = DiscoveredItemId(discovery),
         sourceId = SourceId(source),
@@ -113,19 +117,10 @@ class InboxServiceTest {
         canonicalUrl = url,
         discoveredAt = fetchedAt.minusSeconds(5),
         fetchedAt = fetchedAt,
+        sourceNameSnapshot = sourceName,
+        sourceUrlSnapshot = sourceUrl,
+        sourceTypeSnapshot = SourceType.RSS.name,
     )
-}
-
-private class InboxTestSourceRepository(vararg sources: Source) : SourceRepository {
-    private val values = sources.associateBy { it.id }
-
-    override suspend fun upsert(source: Source) = error("not used")
-    override suspend fun findById(id: SourceId): Source? = values[id]
-    override suspend fun findDue(now: Instant): List<Source> = emptyList()
-    override suspend fun listAll(): List<Source> = values.values.toList()
-    override suspend fun loadCursor(sourceId: SourceId): SourceCursor? = null
-    override suspend fun saveCursor(cursor: SourceCursor) = error("not used")
-    override suspend fun markDue(sourceId: SourceId, at: Instant): Boolean = false
 }
 
 private class CapturingInboxRepository(
