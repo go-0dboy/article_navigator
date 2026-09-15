@@ -8,7 +8,9 @@ import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -78,30 +80,39 @@ object CollectionWorkScheduler {
     const val PERIODIC_WORK_NAME = "article-navigator-periodic-collection"
     const val IMMEDIATE_WORK_NAME = "article-navigator-immediate-collection"
     const val WORK_TAG = "article-navigator-collection"
+    const val PERIODIC_INTERVAL_MINUTES = 15L
 
-    private val connectedConstraint = Constraints.Builder()
+    internal fun periodicConstraints(): Constraints = Constraints.Builder()
+        .setRequiredNetworkType(NetworkType.CONNECTED)
+        .setRequiresBatteryNotLow(true)
+        .build()
+
+    internal fun immediateConstraints(): Constraints = Constraints.Builder()
         .setRequiredNetworkType(NetworkType.CONNECTED)
         .build()
 
-    fun ensurePeriodic(context: Context) {
-        val request = PeriodicWorkRequestBuilder<CollectionWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(connectedConstraint)
+    internal fun periodicRequest(): PeriodicWorkRequest =
+        PeriodicWorkRequestBuilder<CollectionWorker>(PERIODIC_INTERVAL_MINUTES, TimeUnit.MINUTES)
+            .setConstraints(periodicConstraints())
             .addTag(WORK_TAG)
             .build()
 
+    internal fun immediateRequest(): OneTimeWorkRequest =
+        OneTimeWorkRequestBuilder<CollectionWorker>()
+            .setConstraints(immediateConstraints())
+            .addTag(WORK_TAG)
+            .build()
+
+    fun ensurePeriodic(context: Context) {
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             PERIODIC_WORK_NAME,
             ExistingPeriodicWorkPolicy.KEEP,
-            request,
+            periodicRequest(),
         )
     }
 
     fun runNow(context: Context): UUID {
-        val request = OneTimeWorkRequestBuilder<CollectionWorker>()
-            .setConstraints(connectedConstraint)
-            .addTag(WORK_TAG)
-            .build()
-
+        val request = immediateRequest()
         WorkManager.getInstance(context).enqueueUniqueWork(
             IMMEDIATE_WORK_NAME,
             ExistingWorkPolicy.REPLACE,
