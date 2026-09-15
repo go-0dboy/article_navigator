@@ -11,9 +11,9 @@ No phase is complete until all of the following are true:
 - persistence changes include migration/schema tests where applicable;
 - collectors include deterministic fixture/contract tests and do not rely on live Internet for unit tests;
 - Android-specific scheduling/UI behavior receives instrumentation or Robolectric tests where unit tests are insufficient;
-- `gradle test` passes in GitHub Actions;
-- `gradle lint` passes in GitHub Actions;
-- `gradle assembleDebug` passes and publishes an installable APK artifact;
+- `./gradlew test` passes in GitHub Actions;
+- `./gradlew lint` passes in GitHub Actions;
+- `./gradlew assembleDebug` passes and publishes an installable APK artifact;
 - the phase exit criteria below are demonstrated by tests or a reproducible manual acceptance scenario.
 
 A PR with failing or missing required tests is not considered ready to merge.
