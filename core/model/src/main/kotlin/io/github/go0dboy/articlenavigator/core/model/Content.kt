@@ -27,6 +27,9 @@ data class DiscoveredItem(
     val contentHash: String? = null,
     val status: DiscoveryStatus = DiscoveryStatus.DISCOVERED,
     val relevanceScore: Double? = null,
+    val processingAttempts: Int = 0,
+    val nextProcessingAt: Instant? = null,
+    val lastProcessingError: String? = null,
 )
 
 data class RawContent(
