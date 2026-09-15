@@ -1,0 +1,5 @@
+Phase 4 article two
+
+The Inbox is a temporary review queue. A user may reject a material, read it without saving, or promote it into the permanent Knowledge library.
+
+This fixture verifies that discovered content remains separate from long-term knowledge until the user explicitly saves it.
