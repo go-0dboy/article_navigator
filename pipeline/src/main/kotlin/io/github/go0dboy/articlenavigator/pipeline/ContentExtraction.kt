@@ -61,18 +61,24 @@ class DefaultContentExtractor : ContentExtractor {
             .toList()
 
         val result = StringBuilder()
-        var blankRun = 0
+        var hasContent = false
+        var pendingBlankLine = false
+
         for (line in normalizedLines) {
             if (line.isBlank()) {
-                blankRun++
-                if (blankRun <= 1 && result.isNotEmpty()) result.append('\n')
-            } else {
-                if (result.isNotEmpty() && result.last() != '\n') result.append('\n')
-                result.append(line)
-                blankRun = 0
+                if (hasContent) pendingBlankLine = true
+                continue
             }
+
+            if (hasContent) {
+                result.append(if (pendingBlankLine) "\n\n" else "\n")
+            }
+            result.append(line)
+            hasContent = true
+            pendingBlankLine = false
         }
-        return result.toString().trim()
+
+        return result.toString()
     }
 }
 
