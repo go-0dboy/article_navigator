@@ -174,5 +174,8 @@ class InboxLifecyclePersistenceTest {
         canonicalUrl = discovery.canonicalUrl ?: discovery.url,
         discoveredAt = discovery.discoveredAt,
         fetchedAt = now,
+        sourceNameSnapshot = source.name,
+        sourceUrlSnapshot = source.url,
+        sourceTypeSnapshot = source.type.name,
     )
 }
