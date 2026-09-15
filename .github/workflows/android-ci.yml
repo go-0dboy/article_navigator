@@ -15,16 +15,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
@@ -34,11 +36,16 @@ jobs:
         with:
           gradle-version: "9.6.0"
 
-      - name: Build, lint and test
-        run: gradle test lint assembleDebug --stacktrace
+      - name: Unit tests
+        run: gradle test --stacktrace
+
+      - name: Android lint
+        run: gradle lint --stacktrace
+
+      - name: Assemble debug APK
+        run: gradle assembleDebug --stacktrace
 
       - name: Upload debug APK
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: article-navigator-debug
