@@ -101,6 +101,7 @@ class AppContainer(
                 existing.copy(
                     name = "Article Navigator device sample",
                     url = SAMPLE_FEED_URL,
+                    enabled = true,
                     nextCheckAt = if (forceDue) now else existing.nextCheckAt,
                 ),
             )
@@ -139,11 +140,15 @@ class AppContainer(
 
     suspend fun enqueueImmediateCollection(): UUID {
         val now = Instant.now()
-        ensureSampleSource(forceDue = true)
         sourceRepository.listAll()
             .filter { it.enabled }
             .forEach { sourceRepository.upsert(it.copy(nextCheckAt = now)) }
         return CollectionWorkScheduler.runNow(context)
+    }
+
+    suspend fun enqueueDeviceSampleCollection(): UUID {
+        ensureSampleSource(forceDue = true)
+        return enqueueImmediateCollection()
     }
 
     suspend fun loadInbox(): List<InboxItem> = inboxService.list()
@@ -159,7 +164,7 @@ class AppContainer(
         val state = stateRepository.load(SAMPLE_SOURCE_ID)
         val latest = database.ingestionDao().latestDiscovered(5)
         return DeviceStatus(
-            sourceName = source?.name ?: "Sample source is not initialized",
+            sourceName = source?.name ?: "Контрольный источник не добавлен",
             sourceUrl = source?.url ?: SAMPLE_FEED_URL,
             lastSuccessfulCheckAt = source?.lastSuccessfulCheckAt,
             nextCheckAt = source?.nextCheckAt,
