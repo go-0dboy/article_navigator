@@ -3,8 +3,9 @@ package io.github.go0dboy.articlenavigator.core.network
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import mockwebserver3.MockResponse
@@ -101,51 +102,60 @@ class OkHttpTransportTest {
     }
 
     @Test
-    fun cancellingCoroutineCancelsOkHttpCallAndStopsBodyRead() = runTest {
-        withServer { server ->
-            server.enqueue(
-                MockResponse.Builder()
-                    .body("x".repeat(256 * 1024))
-                    .throttleBody(1024, 100, TimeUnit.MILLISECONDS)
-                    .build(),
-            )
-            val callCancelled = AtomicBoolean(false)
-            val bodyCompleted = AtomicBoolean(false)
-            val client = OkHttpClient.Builder()
-                .eventListener(
-                    object : EventListener() {
-                        override fun canceled(call: Call) {
-                            callCancelled.set(true)
-                        }
-
-                        override fun responseBodyEnd(call: Call, byteCount: Long) {
-                            bodyCompleted.set(true)
-                        }
-                    },
+    fun cancellingCoroutineCancelsOkHttpCallAndStopsBodyRead() = runBlocking {
+        withTimeout(10_000) {
+            withServer { server ->
+                server.enqueue(
+                    MockResponse.Builder()
+                        .body("x".repeat(128 * 1024))
+                        .throttleBody(4096, 100, TimeUnit.MILLISECONDS)
+                        .build(),
                 )
-                .build()
-            val transport = OkHttpTransport(client)
+                val bodyStarted = CompletableDeferred<Unit>()
+                val callCancelled = CompletableDeferred<Unit>()
+                val bodyCompleted = AtomicBoolean(false)
+                val client = OkHttpClient.Builder()
+                    .eventListener(
+                        object : EventListener() {
+                            override fun responseBodyStart(call: Call) {
+                                bodyStarted.complete(Unit)
+                            }
 
-            val request = async {
-                transport.execute(HttpRequest(server.url("/slow").toString(), maxResponseBytes = 512 * 1024))
-            }
-            server.takeRequest()
-            delay(150)
-            request.cancel()
+                            override fun canceled(call: Call) {
+                                callCancelled.complete(Unit)
+                            }
 
-            try {
-                request.await()
-                fail("Expected CancellationException")
-            } catch (_: CancellationException) {
-                // Expected: cancellation is never translated into a normal HTTP/source failure.
-            }
+                            override fun responseBodyEnd(call: Call, byteCount: Long) {
+                                bodyCompleted.set(true)
+                            }
+                        },
+                    )
+                    .build()
+                try {
+                    val transport = OkHttpTransport(client)
+                    val request = async {
+                        transport.execute(HttpRequest(server.url("/slow").toString(), maxResponseBytes = 512 * 1024))
+                    }
 
-            withTimeout(2_000) {
-                while (!callCancelled.get()) delay(10)
+                    server.takeRequest()
+                    withTimeout(2_000) { bodyStarted.await() }
+                    request.cancel()
+
+                    try {
+                        request.await()
+                        fail("Expected CancellationException")
+                    } catch (_: CancellationException) {
+                        // Expected: cancellation is never translated into a normal HTTP/source failure.
+                    }
+
+                    withTimeout(2_000) { callCancelled.await() }
+                    assertTrue(request.isCancelled)
+                    assertFalse("A cancelled slow response must not be fully consumed", bodyCompleted.get())
+                } finally {
+                    client.dispatcher.executorService.shutdownNow()
+                    client.connectionPool.evictAll()
+                }
             }
-            assertTrue(callCancelled.get())
-            assertTrue(request.isCancelled)
-            assertFalse("A cancelled slow response must not be fully consumed", bodyCompleted.get())
         }
     }
 
