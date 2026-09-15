@@ -35,6 +35,9 @@ internal fun Source.toEntity() = SourceEntity(
     createdAtEpochMillis = createdAt.toEpochMilli(),
     lastSuccessfulCheckAtEpochMillis = lastSuccessfulCheckAt?.toEpochMilli(),
     nextCheckAtEpochMillis = nextCheckAt?.toEpochMilli(),
+    settingsRevision = settingsRevision,
+    leaseToken = null,
+    leaseExpiresAtEpochMillis = null,
 )
 
 internal fun SourceEntity.toDomain() = Source(
@@ -49,6 +52,7 @@ internal fun SourceEntity.toDomain() = Source(
     createdAt = Instant.ofEpochMilli(createdAtEpochMillis),
     lastSuccessfulCheckAt = lastSuccessfulCheckAtEpochMillis?.let(Instant::ofEpochMilli),
     nextCheckAt = nextCheckAtEpochMillis?.let(Instant::ofEpochMilli),
+    settingsRevision = settingsRevision,
 )
 
 internal fun SourceCursor.toEntity() = SourceCursorEntity(
@@ -82,9 +86,11 @@ internal fun DiscoveredItem.toEntity() = DiscoveredItemEntity(
     sourceId = sourceId.value,
     url = url,
     canonicalUrl = canonicalUrl,
+    resolvedUrl = resolvedUrl,
     title = title,
     publishedAtEpochMillis = publishedAt?.toEpochMilli(),
     discoveredAtEpochMillis = discoveredAt.toEpochMilli(),
+    lastSeenAtEpochMillis = lastSeenAt.toEpochMilli(),
     contentHash = contentHash,
     status = status.name,
     relevanceScore = relevanceScore,
@@ -98,9 +104,11 @@ internal fun DiscoveredItemEntity.toDomain() = DiscoveredItem(
     sourceId = SourceId(sourceId),
     url = url,
     canonicalUrl = canonicalUrl,
+    resolvedUrl = resolvedUrl,
     title = title,
     publishedAt = publishedAtEpochMillis?.let(Instant::ofEpochMilli),
     discoveredAt = Instant.ofEpochMilli(discoveredAtEpochMillis),
+    lastSeenAt = Instant.ofEpochMilli(if (lastSeenAtEpochMillis == 0L) discoveredAtEpochMillis else lastSeenAtEpochMillis),
     contentHash = contentHash,
     status = DiscoveryStatus.valueOf(status),
     relevanceScore = relevanceScore,
@@ -145,6 +153,7 @@ internal fun InboxOrigin.toEntity() = InboxOriginEntity(
     discoveredItemId.value,
     sourceId.value,
     discoveredUrl,
+    resolvedUrl,
     canonicalUrl,
     discoveredAt.toEpochMilli(),
     fetchedAt.toEpochMilli(),
@@ -155,6 +164,7 @@ internal fun InboxOriginEntity.toDomain() = InboxOrigin(
     DiscoveredItemId(discoveredItemId),
     SourceId(sourceId),
     discoveredUrl,
+    resolvedUrl,
     canonicalUrl,
     Instant.ofEpochMilli(discoveredAtEpochMillis),
     Instant.ofEpochMilli(fetchedAtEpochMillis),
@@ -179,12 +189,29 @@ internal fun DocumentVersionEntity.toDomain() = DocumentVersion(
 )
 
 internal fun DocumentProvenance.toEntity() = DocumentProvenanceEntity(
-    documentId.value, originKey, sourceId.value, discoveredUrl, discoveredAt.toEpochMilli(), fetchedAt.toEpochMilli(),
+    documentId = documentId.value,
+    originKey = originKey,
+    sourceId = sourceId.value,
+    discoveredUrl = discoveredUrl,
+    resolvedUrl = resolvedUrl,
+    discoveredAtEpochMillis = discoveredAt.toEpochMilli(),
+    fetchedAtEpochMillis = fetchedAt.toEpochMilli(),
+    sourceNameSnapshot = sourceNameSnapshot,
+    sourceUrlSnapshot = sourceUrlSnapshot,
+    sourceTypeSnapshot = sourceTypeSnapshot,
 )
 
 internal fun DocumentProvenanceEntity.toDomain() = DocumentProvenance(
-    DocumentId(documentId), SourceId(sourceId), discoveredUrl, Instant.ofEpochMilli(discoveredAtEpochMillis),
-    Instant.ofEpochMilli(fetchedAtEpochMillis), originKey,
+    documentId = DocumentId(documentId),
+    sourceId = SourceId(sourceId),
+    discoveredUrl = discoveredUrl,
+    resolvedUrl = resolvedUrl,
+    discoveredAt = Instant.ofEpochMilli(discoveredAtEpochMillis),
+    fetchedAt = Instant.ofEpochMilli(fetchedAtEpochMillis),
+    sourceNameSnapshot = sourceNameSnapshot,
+    sourceUrlSnapshot = sourceUrlSnapshot,
+    sourceTypeSnapshot = sourceTypeSnapshot,
+    originKey = originKey,
 )
 
 internal fun SeenFingerprint.toEntity() = SeenFingerprintEntity(
