@@ -19,9 +19,11 @@ import io.github.go0dboy.articlenavigator.core.model.SourceId
 import java.time.Instant
 
 interface SourceRepository {
+    /** Creation/import path. Scheduler code must not use full-row upsert for operational updates. */
     suspend fun upsert(source: Source)
     suspend fun findById(id: SourceId): Source?
     suspend fun findDue(now: Instant): List<Source>
+    suspend fun findDue(now: Instant, limit: Int): List<Source> = findDue(now).take(limit)
     suspend fun listAll(): List<Source>
     suspend fun loadCursor(sourceId: SourceId): SourceCursor?
     suspend fun saveCursor(cursor: SourceCursor)
@@ -30,6 +32,58 @@ interface SourceRepository {
 interface CollectionStateRepository {
     suspend fun load(sourceId: SourceId): SourceCollectionState?
     suspend fun save(state: SourceCollectionState)
+}
+
+/**
+ * Exclusive, expiring ownership of one source collection attempt.
+ * Network work happens while this lease is held but outside any DB transaction.
+ */
+data class SourceCollectionLease(
+    val source: Source,
+    val cursor: SourceCursor?,
+    val previousState: SourceCollectionState?,
+    val runToken: String,
+    val settingsRevision: Long,
+    val expiresAt: Instant,
+)
+
+enum class CollectionCommitOutcome {
+    APPLIED,
+    STALE,
+}
+
+/**
+ * Atomic boundary for collection scheduling state. Implementations must:
+ * - claim with a compare-and-set update;
+ * - commit discovery + cursor + schedule + diagnostics in one transaction;
+ * - reject commits from expired/replaced leases or changed source settings.
+ */
+interface CollectionRepository {
+    suspend fun tryClaim(
+        sourceId: SourceId,
+        runToken: String,
+        now: Instant,
+        leaseExpiresAt: Instant,
+    ): SourceCollectionLease?
+
+    suspend fun commitSuccess(
+        lease: SourceCollectionLease,
+        items: List<DiscoveredItem>,
+        cursor: SourceCursor,
+        completedAt: Instant,
+        nextCheckAt: Instant,
+        discoveredCount: Int,
+    ): CollectionCommitOutcome
+
+    suspend fun commitFailure(
+        lease: SourceCollectionLease,
+        completedAt: Instant,
+        nextCheckAt: Instant,
+        errorType: String,
+        errorMessage: String?,
+    ): CollectionCommitOutcome
+
+    suspend fun release(lease: SourceCollectionLease)
 }
 
 interface IngestionRepository {
