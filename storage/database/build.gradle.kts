@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "io.github.go0dboy.articlenavigator.storage.database"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26
