@@ -10,7 +10,6 @@ import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceCursor
 import io.github.go0dboy.articlenavigator.core.model.SourceType
 import io.github.go0dboy.articlenavigator.core.network.HttpRequest
-import io.github.go0dboy.articlenavigator.core.network.HttpResponse
 import io.github.go0dboy.articlenavigator.core.network.HttpTransport
 import java.io.ByteArrayInputStream
 import java.security.MessageDigest
@@ -27,10 +26,13 @@ class RssAtomSourceAdapter(
     private val transport: HttpTransport,
     private val clock: Clock = Clock.systemUTC(),
 ) : SourceAdapter {
+    override val adapterType: String = ADAPTER_TYPE
     override val supportedTypes: Set<SourceType> = setOf(SourceType.RSS, SourceType.ATOM)
 
     override suspend fun discover(source: Source, cursor: SourceCursor?): DiscoveryResult {
-        require(supports(source.type)) { "Unsupported source type: ${source.type}" }
+        require(supports(source)) {
+            "Unsupported source adapter/type: ${source.adapterType}/${source.type}"
+        }
 
         val requestHeaders = linkedMapOf(
             "Accept" to "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
@@ -194,6 +196,10 @@ class RssAtomSourceAdapter(
         val items: List<DiscoveredItem>,
         val firstStableKey: String?,
     )
+
+    companion object {
+        const val ADAPTER_TYPE: String = "rss-atom"
+    }
 }
 
 class FeedHttpException(

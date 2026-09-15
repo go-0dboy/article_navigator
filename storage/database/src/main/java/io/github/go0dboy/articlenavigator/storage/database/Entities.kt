@@ -35,6 +35,19 @@ data class SourceCursorEntity(
 )
 
 @Entity(
+    tableName = "source_collection_states",
+    foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
+)
+data class SourceCollectionStateEntity(
+    @PrimaryKey val sourceId: String,
+    val consecutiveFailures: Int,
+    val lastAttemptAtEpochMillis: Long?,
+    val lastErrorType: String?,
+    val lastErrorMessage: String?,
+    val lastDiscoveredCount: Int,
+)
+
+@Entity(
     tableName = "discovered_items",
     foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
     indices = [Index("sourceId"), Index(value = ["sourceId", "url"], unique = true), Index("status")],

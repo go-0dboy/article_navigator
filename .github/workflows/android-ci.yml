@@ -29,24 +29,54 @@ jobs:
           packages: platform-tools
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Set up Gradle 9.6.0
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
 
+      - name: Snapshot committed Room schemas
+        run: |
+          mkdir -p /tmp/room-schemas-committed
+          cp -a storage/database/schemas/. /tmp/room-schemas-committed/
+
       - name: Unit tests
         run: gradle test --stacktrace
 
       - name: Verify Room schema is committed
         run: |
-          changes="$(git status --porcelain -- storage/database/schemas)"
-          if [ -n "$changes" ]; then
-            echo "Room schema changed or is untracked. Commit the generated schema before merging."
-            echo "$changes"
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          before_root = Path('/tmp/room-schemas-committed')
+          after_root = Path('storage/database/schemas')
+
+          def load(root):
+              return {
+                  str(path.relative_to(root)): json.loads(path.read_text(encoding='utf-8'))
+                  for path in root.rglob('*.json')
+              }
+
+          before = load(before_root)
+          after = load(after_root)
+          if before.keys() != after.keys():
+              print('Room schema file set changed. Commit all generated schema files.')
+              print('Committed:', sorted(before))
+              print('Generated:', sorted(after))
+              sys.exit(1)
+
+          changed = [name for name in before if before[name] != after[name]]
+          if changed:
+              print('Room schema changed semantically. Commit the generated schema before merging:')
+              for name in changed:
+                  print(' -', name)
+              sys.exit(1)
+
+          print('Room schemas match committed structure.')
+          PY
 
       - name: Upload Room schemas
         if: always()

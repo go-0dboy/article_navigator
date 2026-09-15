@@ -38,3 +38,18 @@ data class SourceCursor(
     val lastGuid: String? = null,
     val lastCheckedAt: Instant? = null,
 )
+
+/** Operational diagnostics for collection. Canonical scheduling remains on [Source]. */
+data class SourceCollectionState(
+    val sourceId: SourceId,
+    val consecutiveFailures: Int = 0,
+    val lastAttemptAt: Instant? = null,
+    val lastErrorType: String? = null,
+    val lastErrorMessage: String? = null,
+    val lastDiscoveredCount: Int = 0,
+) {
+    init {
+        require(consecutiveFailures >= 0)
+        require(lastDiscoveredCount >= 0)
+    }
+}
