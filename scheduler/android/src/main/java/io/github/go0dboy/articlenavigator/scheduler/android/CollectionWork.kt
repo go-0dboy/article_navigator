@@ -3,6 +3,7 @@ package io.github.go0dboy.articlenavigator.scheduler.android
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -14,6 +15,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import io.github.go0dboy.articlenavigator.scheduler.core.CollectionRunReport
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
@@ -47,13 +49,13 @@ class CollectionWorker(
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
+            // Source-local errors are already isolated and persisted by the orchestrator.
+            // Reaching here means shared infrastructure (typically storage) was unavailable.
             if (runAttemptCount < MAX_INFRASTRUCTURE_RETRIES) {
                 Result.retry()
             } else {
-                Result.failure(
-                    workDataOf(KEY_ERROR to (error.message ?: error::class.java.simpleName)),
-                )
+                Result.failure(workDataOf(KEY_ERROR to (error.message ?: error::class.java.simpleName)))
             }
         }
     }
@@ -79,13 +81,19 @@ object CollectionWorkScheduler {
     const val IMMEDIATE_WORK_NAME = "article-navigator-immediate-collection"
     const val WORK_TAG = "article-navigator-collection"
 
-    private val connectedConstraint = Constraints.Builder()
+    private val periodicConstraints = Constraints.Builder()
+        .setRequiredNetworkType(NetworkType.CONNECTED)
+        .setRequiresBatteryNotLow(true)
+        .build()
+
+    private val immediateConstraints = Constraints.Builder()
         .setRequiredNetworkType(NetworkType.CONNECTED)
         .build()
 
     fun ensurePeriodic(context: Context) {
         val request = PeriodicWorkRequestBuilder<CollectionWorker>(15, TimeUnit.MINUTES)
-            .setConstraints(connectedConstraint)
+            .setConstraints(periodicConstraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofMinutes(15))
             .addTag(WORK_TAG)
             .build()
 
@@ -98,7 +106,8 @@ object CollectionWorkScheduler {
 
     fun runNow(context: Context): UUID {
         val request = OneTimeWorkRequestBuilder<CollectionWorker>()
-            .setConstraints(connectedConstraint)
+            .setConstraints(immediateConstraints)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofMinutes(1))
             .addTag(WORK_TAG)
             .build()
 

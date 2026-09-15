@@ -7,6 +7,7 @@ import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
 import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
 import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
 import io.github.go0dboy.articlenavigator.core.model.SourceId
+import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -30,12 +31,23 @@ class RoomKnowledgeRepositoryTest {
             disposition = ContentDisposition.SAVED,
         )
         val version = DocumentVersion(document.id, 1, "hash-v1", "Body", now, "parser-v1")
-        val provenance = DocumentProvenance(document.id, SourceId("source-1"), "https://example.test/article", now, now)
+        val provenance = DocumentProvenance(
+            documentId = document.id,
+            sourceId = SourceId("source-1"),
+            discoveredUrl = "https://example.test/article",
+            resolvedUrl = "https://example.test/article",
+            discoveredAt = now,
+            fetchedAt = now,
+            sourceNameSnapshot = "Source",
+            sourceUrlSnapshot = "https://example.test/feed.xml",
+            sourceTypeSnapshot = SourceType.RSS.name,
+        )
         val fingerprint = SeenFingerprint("url-hash", "hash-v1", SourceId("source-1"), now, ContentDisposition.SAVED)
 
         repository.persist(document, version, provenance, fingerprint)
 
         assertEquals(document, repository.findById(document.id))
+        assertEquals(document, repository.findByContentHash("hash-v1"))
         assertEquals(listOf(version), repository.versions(document.id))
         assertEquals(listOf(provenance), repository.provenance(document.id))
         assertEquals(fingerprint, repository.findSeen("url-hash", SourceId("source-1")))
@@ -72,16 +84,47 @@ private class FakeDocumentDao : DocumentDao {
     private val provenance = linkedMapOf<Pair<String, String>, DocumentProvenanceEntity>()
     private val fingerprints = linkedMapOf<Pair<String, String>, SeenFingerprintEntity>()
 
-    override suspend fun upsert(document: DocumentEntity) { documents[document.id] = document }
-    override suspend fun upsertVersion(version: DocumentVersionEntity) { versions[version.documentId to version.version] = version }
-    override suspend fun upsertProvenance(provenance: DocumentProvenanceEntity) { this.provenance[provenance.documentId to provenance.sourceId] = provenance }
-    override suspend fun upsertFingerprint(fingerprint: SeenFingerprintEntity) { fingerprints[fingerprint.canonicalUrlHash to fingerprint.sourceId] = fingerprint }
-    override suspend fun findById(id: String): DocumentEntity? = documents[id]
-    override suspend fun findByCanonicalUrl(canonicalUrl: String): DocumentEntity? = documents.values.firstOrNull { it.canonicalUrl == canonicalUrl }
-    override suspend fun versions(documentId: String): List<DocumentVersionEntity> = versions.values.filter { it.documentId == documentId }.sortedBy { it.version }
-    override suspend fun provenance(documentId: String): List<DocumentProvenanceEntity> = provenance.values.filter { it.documentId == documentId }.sortedBy { it.discoveredAtEpochMillis }
-    override suspend fun findFingerprint(canonicalUrlHash: String, sourceId: String): SeenFingerprintEntity? = fingerprints[canonicalUrlHash to sourceId]
-    override suspend fun updateDisposition(id: String, disposition: String, updatedAtEpochMillis: Long) {
-        documents[id] = documents.getValue(id).copy(disposition = disposition, updatedAtEpochMillis = updatedAtEpochMillis)
+    override suspend fun upsert(document: DocumentEntity) {
+        documents[document.id] = document
     }
+
+    override suspend fun upsertVersion(version: DocumentVersionEntity) {
+        versions[version.documentId to version.version] = version
+    }
+
+    override suspend fun upsertProvenance(provenance: DocumentProvenanceEntity) {
+        this.provenance[provenance.documentId to provenance.originKey] = provenance
+    }
+
+    override suspend fun upsertFingerprint(fingerprint: SeenFingerprintEntity) {
+        fingerprints[fingerprint.canonicalUrlHash to fingerprint.sourceId] = fingerprint
+    }
+
+    override suspend fun findById(id: String): DocumentEntity? = documents[id]
+
+    override suspend fun findByCanonicalUrl(canonicalUrl: String): DocumentEntity? =
+        documents.values.firstOrNull { it.canonicalUrl == canonicalUrl }
+
+    override suspend fun findByContentHash(contentHash: String): DocumentEntity? =
+        documents.values.firstOrNull { it.contentHash == contentHash }
+
+    override suspend fun versions(documentId: String): List<DocumentVersionEntity> =
+        versions.values.filter { it.documentId == documentId }.sortedBy { it.version }
+
+    override suspend fun provenance(documentId: String): List<DocumentProvenanceEntity> =
+        provenance.values.filter { it.documentId == documentId }.sortedBy { it.discoveredAtEpochMillis }
+
+    override suspend fun findFingerprint(canonicalUrlHash: String, sourceId: String): SeenFingerprintEntity? =
+        fingerprints[canonicalUrlHash to sourceId]
+
+    override suspend fun updateDisposition(id: String, disposition: String, updatedAtEpochMillis: Long) {
+        documents[id] = documents.getValue(id).copy(
+            disposition = disposition,
+            updatedAtEpochMillis = updatedAtEpochMillis,
+        )
+    }
+
+    override suspend fun markDiscoveryProcessed(id: String) = Unit
+
+    override suspend fun deleteRawContent(id: String) = Unit
 }

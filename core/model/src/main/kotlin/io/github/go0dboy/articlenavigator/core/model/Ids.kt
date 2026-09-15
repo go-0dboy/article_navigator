@@ -17,6 +17,13 @@ value class DiscoveredItemId(val value: String) {
 }
 
 @JvmInline
+value class InboxItemId(val value: String) {
+    companion object {
+        fun new(): InboxItemId = InboxItemId(UUID.randomUUID().toString())
+    }
+}
+
+@JvmInline
 value class DocumentId(val value: String) {
     companion object {
         fun new(): DocumentId = DocumentId(UUID.randomUUID().toString())

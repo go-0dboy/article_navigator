@@ -8,6 +8,11 @@ kotlin {
 
 dependencies {
     api(project(":core:model"))
-    api(project(":collector:api"))
+    implementation(project(":core:data"))
+    implementation(project(":collector:api"))
+    implementation(libs.jsoup)
+    implementation(libs.kotlinx.coroutines.core)
+
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -3,24 +3,24 @@
   <channel>
     <title>Article Navigator device test feed</title>
     <link>https://github.com/go-0dboy/article_navigator</link>
-    <description>Deterministic RSS fixture used to verify Phase 3 on a real Android device.</description>
+    <description>Deterministic RSS fixture used to verify collection and Inbox ingestion on a real Android device.</description>
     <item>
-      <guid>phase3-device-item-1</guid>
-      <title>Phase 3 scheduler is alive</title>
-      <link>https://github.com/go-0dboy/article_navigator</link>
-      <pubDate>Tue, 15 Sep 2026 11:00:00 GMT</pubDate>
+      <guid>phase4-device-item-1</guid>
+      <title>Phase 4 article one</title>
+      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/f2ffb68aa9777c540847783c33a1cc662a9da7fa/docs/device-test-article-1.txt</link>
+      <pubDate>Tue, 15 Sep 2026 12:20:00 GMT</pubDate>
     </item>
     <item>
-      <guid>phase3-device-item-2</guid>
-      <title>RSS discovery reaches Room storage</title>
-      <link>https://github.com/go-0dboy/article_navigator/blob/main/README.md</link>
-      <pubDate>Tue, 15 Sep 2026 11:01:00 GMT</pubDate>
+      <guid>phase4-device-item-2</guid>
+      <title>Phase 4 article two</title>
+      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/f2ffb68aa9777c540847783c33a1cc662a9da7fa/docs/device-test-article-2.txt</link>
+      <pubDate>Tue, 15 Sep 2026 12:21:00 GMT</pubDate>
     </item>
     <item>
-      <guid>phase3-device-item-3</guid>
-      <title>WorkManager can wake the collector</title>
-      <link>https://github.com/go-0dboy/article_navigator/tree/main/collector</link>
-      <pubDate>Tue, 15 Sep 2026 11:02:00 GMT</pubDate>
+      <guid>phase4-device-item-3</guid>
+      <title>Phase 4 article three</title>
+      <link>https://raw.githubusercontent.com/go-0dboy/article_navigator/f2ffb68aa9777c540847783c33a1cc662a9da7fa/docs/device-test-article-3.txt</link>
+      <pubDate>Tue, 15 Sep 2026 12:22:00 GMT</pubDate>
     </item>
   </channel>
 </rss>

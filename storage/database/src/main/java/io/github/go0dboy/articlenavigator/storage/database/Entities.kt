@@ -1,11 +1,15 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
+import androidx.room3.ColumnInfo
 import androidx.room3.Entity
 import androidx.room3.ForeignKey
 import androidx.room3.Index
 import androidx.room3.PrimaryKey
 
-@Entity(tableName = "sources", indices = [Index("nextCheckAtEpochMillis")])
+@Entity(
+    tableName = "sources",
+    indices = [Index("nextCheckAtEpochMillis"), Index("leaseExpiresAtEpochMillis")],
+)
 data class SourceEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -19,6 +23,9 @@ data class SourceEntity(
     val createdAtEpochMillis: Long,
     val lastSuccessfulCheckAtEpochMillis: Long?,
     val nextCheckAtEpochMillis: Long?,
+    @ColumnInfo(defaultValue = "0") val settingsRevision: Long,
+    val leaseToken: String?,
+    val leaseExpiresAtEpochMillis: Long?,
 )
 
 @Entity(
@@ -50,19 +57,35 @@ data class SourceCollectionStateEntity(
 @Entity(
     tableName = "discovered_items",
     foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
-    indices = [Index("sourceId"), Index(value = ["sourceId", "url"], unique = true), Index("status")],
+    indices = [
+        Index("sourceId"),
+        Index(value = ["sourceId", "url"], unique = true),
+        Index("status"),
+        Index("nextProcessingAtEpochMillis"),
+        Index("lastSeenAtEpochMillis"),
+    ],
 )
 data class DiscoveredItemEntity(
     @PrimaryKey val id: String,
     val sourceId: String,
+    /** Source-published absolute URL. Never rewritten after first observation. */
     val url: String,
+    /** Conservative URL-derived deduplication key. */
     val canonicalUrl: String?,
+    /** Final URL observed after redirects while fetching. */
+    val resolvedUrl: String?,
     val title: String?,
     val publishedAtEpochMillis: Long?,
+    /** Time of first observation. */
     val discoveredAtEpochMillis: Long,
+    /** Most recent time the source still advertised the item. */
+    @ColumnInfo(defaultValue = "0") val lastSeenAtEpochMillis: Long,
     val contentHash: String?,
     val status: String,
     val relevanceScore: Double?,
+    @ColumnInfo(defaultValue = "0") val processingAttempts: Int,
+    val nextProcessingAtEpochMillis: Long?,
+    val lastProcessingError: String?,
 )
 
 @Entity(
@@ -78,7 +101,50 @@ data class RawContentEntity(
     val expiresAtEpochMillis: Long?,
 )
 
-@Entity(tableName = "documents", indices = [Index(value = ["canonicalUrl"], unique = true)])
+@Entity(
+    tableName = "inbox_items",
+    indices = [
+        Index(value = ["canonicalUrl"], unique = true),
+        Index("contentHash"),
+        Index("createdAtEpochMillis"),
+    ],
+)
+data class InboxItemEntity(
+    @PrimaryKey val id: String,
+    val canonicalUrl: String,
+    val title: String,
+    val publishedAtEpochMillis: Long?,
+    val normalizedText: String,
+    val contentHash: String,
+    val createdAtEpochMillis: Long,
+    val updatedAtEpochMillis: Long,
+)
+
+@Entity(
+    tableName = "inbox_origins",
+    primaryKeys = ["inboxItemId", "discoveredItemId"],
+    foreignKeys = [
+        ForeignKey(entity = InboxItemEntity::class, parentColumns = ["id"], childColumns = ["inboxItemId"], onDelete = ForeignKey.CASCADE),
+        // Pending provenance must not disappear because a subscription is hard-deleted.
+        ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.RESTRICT),
+    ],
+    indices = [Index(value = ["discoveredItemId"], unique = true), Index("sourceId")],
+)
+data class InboxOriginEntity(
+    val inboxItemId: String,
+    val discoveredItemId: String,
+    val sourceId: String,
+    val discoveredUrl: String,
+    val resolvedUrl: String?,
+    val canonicalUrl: String,
+    val discoveredAtEpochMillis: Long,
+    val fetchedAtEpochMillis: Long,
+    val sourceNameSnapshot: String,
+    val sourceUrlSnapshot: String,
+    val sourceTypeSnapshot: String,
+)
+
+@Entity(tableName = "documents", indices = [Index(value = ["canonicalUrl"], unique = true), Index("contentHash")])
 data class DocumentEntity(
     @PrimaryKey val id: String,
     val canonicalUrl: String,
@@ -110,25 +176,31 @@ data class DocumentVersionEntity(
 
 @Entity(
     tableName = "document_provenance",
-    primaryKeys = ["documentId", "sourceId"],
+    primaryKeys = ["documentId", "originKey"],
     foreignKeys = [
         ForeignKey(entity = DocumentEntity::class, parentColumns = ["id"], childColumns = ["documentId"], onDelete = ForeignKey.CASCADE),
-        ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE),
+        // Saved provenance must never disappear because a subscription is removed.
+        ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.RESTRICT),
     ],
     indices = [Index("sourceId")],
 )
 data class DocumentProvenanceEntity(
     val documentId: String,
+    val originKey: String,
     val sourceId: String,
     val discoveredUrl: String,
+    val resolvedUrl: String?,
     val discoveredAtEpochMillis: Long,
     val fetchedAtEpochMillis: Long,
+    val sourceNameSnapshot: String,
+    val sourceUrlSnapshot: String,
+    val sourceTypeSnapshot: String,
 )
 
 @Entity(
     tableName = "seen_fingerprints",
     primaryKeys = ["canonicalUrlHash", "sourceId"],
-    foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.CASCADE)],
+    foreignKeys = [ForeignKey(entity = SourceEntity::class, parentColumns = ["id"], childColumns = ["sourceId"], onDelete = ForeignKey.RESTRICT)],
     indices = [Index("sourceId")],
 )
 data class SeenFingerprintEntity(

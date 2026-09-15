@@ -49,8 +49,12 @@ class MappersTest {
             documentId = document.id,
             sourceId = SourceId("source-1"),
             discoveredUrl = "https://example.test/feed-entry",
+            resolvedUrl = "https://example.test/article",
             discoveredAt = Instant.parse("2026-09-15T07:55:00Z"),
             fetchedAt = Instant.parse("2026-09-15T08:00:00Z"),
+            sourceNameSnapshot = "Example",
+            sourceUrlSnapshot = "https://example.test/feed.xml",
+            sourceTypeSnapshot = SourceType.RSS.name,
         )
 
         assertEquals(document, document.toEntity().toDomain())

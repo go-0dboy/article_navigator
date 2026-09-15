@@ -29,12 +29,19 @@ jobs:
           packages: platform-tools
 
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-37.0" "build-tools;37.0.0"
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
 
-      - name: Set up Gradle 9.6.0
+      - name: Set up Gradle cache and validate wrapper
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "9.6.0"
+
+      - name: Verify committed Gradle Wrapper integrity
+        run: |
+          echo "497c8c2a7e5031f6aa847f88104aa80a93532ec32ee17bdb8d1d2f67a194a9c7  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check --strict
+          grep -F "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.6.0-bin.zip" gradle/wrapper/gradle-wrapper.properties
+          grep -F "distributionSha256Sum=bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01" gradle/wrapper/gradle-wrapper.properties
+
+      - name: Verify clean-checkout toolchain
+        run: ./gradlew --version
 
       - name: Snapshot committed Room schemas
         run: |
@@ -42,7 +49,7 @@ jobs:
           cp -a storage/database/schemas/. /tmp/room-schemas-committed/
 
       - name: Unit tests
-        run: gradle test --stacktrace
+        run: ./gradlew test --stacktrace
 
       - name: Verify Room schema is committed
         run: |
@@ -87,10 +94,21 @@ jobs:
           if-no-files-found: warn
 
       - name: Android lint
-        run: gradle lint --stacktrace
+        run: ./gradlew lint --stacktrace
 
       - name: Assemble debug APK
-        run: gradle assembleDebug --stacktrace
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Verify debug APK identity
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/36.0.0/aapt2"
+          test -f "$APK"
+          "$APKSIGNER" verify "$APK"
+          PACKAGE_ID=$("$AAPT2" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          echo "APK package id: $PACKAGE_ID"
+          test "$PACKAGE_ID" = "io.github.go0dboy.articlenavigator.dev"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

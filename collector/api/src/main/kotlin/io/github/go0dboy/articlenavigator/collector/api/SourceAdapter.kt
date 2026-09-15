@@ -33,5 +33,7 @@ data class FetchResult(
     val statusCode: Int,
     val contentType: String?,
     val body: ByteArray,
+    /** Final response URL after redirects. The source-published URL remains on item.url. */
+    val resolvedUrl: String? = null,
     val fetchedHeaders: Map<String, String> = emptyMap(),
 )

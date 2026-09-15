@@ -29,6 +29,17 @@ data class RetryPolicy(
     }
 }
 
+/**
+ * Source-local failure metadata understood by the scheduler without depending on a concrete adapter.
+ * [retryAfter] is a server-requested minimum delay (for example HTTP Retry-After).
+ */
+open class SourceCollectionException(
+    message: String,
+    cause: Throwable? = null,
+    val retryable: Boolean = true,
+    val retryAfter: Duration? = null,
+) : Exception(message, cause)
+
 data class RateLimitPolicy(
     val minimumInterval: Duration = Duration.ofSeconds(1),
 ) {

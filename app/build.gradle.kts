@@ -12,7 +12,16 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0-dev"
+        versionName = "0.1.0"
+        manifestPlaceholders["appLabel"] = "Article Navigator"
+    }
+
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "Article Navigator Dev"
+        }
     }
 
     buildFeatures {
@@ -35,9 +44,12 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":collector:api"))
     implementation(project(":collector:rss"))
+    implementation(project(":pipeline"))
     implementation(project(":scheduler:core"))
     implementation(project(":scheduler:android"))
     implementation(project(":storage:database"))
+    implementation(project(":feature:sources"))
+    implementation(project(":feature:inbox"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
