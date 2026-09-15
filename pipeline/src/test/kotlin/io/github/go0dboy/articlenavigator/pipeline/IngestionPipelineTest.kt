@@ -264,6 +264,67 @@ private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionReposi
             }
         }
         .take(limit)
+
+    override suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean {
+        val item = items[id] ?: return false
+        items[id] = item.copy(
+            canonicalUrl = canonicalUrl ?: item.canonicalUrl,
+            status = DiscoveryStatus.PROCESSED,
+            nextProcessingAt = null,
+            lastProcessingError = null,
+        )
+        return true
+    }
+
+    override suspend fun markFetched(
+        id: DiscoveredItemId,
+        canonicalUrl: String,
+        resolvedUrl: String?,
+        contentHash: String,
+    ): Boolean {
+        val item = items[id] ?: return false
+        items[id] = item.copy(
+            canonicalUrl = canonicalUrl,
+            resolvedUrl = resolvedUrl ?: item.resolvedUrl,
+            contentHash = contentHash,
+            status = DiscoveryStatus.FETCHED,
+            nextProcessingAt = null,
+            lastProcessingError = null,
+        )
+        return true
+    }
+
+    override suspend fun markFailed(
+        id: DiscoveredItemId,
+        processingAttempts: Int,
+        nextProcessingAt: Instant,
+        lastProcessingError: String,
+    ): Boolean {
+        val item = items[id] ?: return false
+        items[id] = item.copy(
+            status = DiscoveryStatus.FAILED,
+            processingAttempts = processingAttempts,
+            nextProcessingAt = nextProcessingAt,
+            lastProcessingError = lastProcessingError,
+        )
+        return true
+    }
+
+    override suspend fun markSkipped(
+        id: DiscoveredItemId,
+        canonicalUrl: String?,
+        lastProcessingError: String,
+    ): Boolean {
+        val item = items[id] ?: return false
+        items[id] = item.copy(
+            canonicalUrl = canonicalUrl ?: item.canonicalUrl,
+            status = DiscoveryStatus.SKIPPED,
+            nextProcessingAt = null,
+            lastProcessingError = lastProcessingError,
+        )
+        return true
+    }
+
     override suspend fun storeRawContent(content: RawContent) { raw[content.discoveredItemId] = content }
     override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = raw[id]
     override suspend fun deleteRawContent(id: DiscoveredItemId) { raw.remove(id) }
