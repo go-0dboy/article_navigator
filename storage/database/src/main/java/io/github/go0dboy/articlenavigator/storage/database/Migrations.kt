@@ -20,6 +20,15 @@ val MIGRATION_1_2 = Migration(1, 2) { connection ->
 }
 
 val MIGRATION_2_3 = Migration(2, 3) { connection ->
+    connection.prepare("ALTER TABLE `discovered_items` ADD COLUMN `processingAttempts` INTEGER NOT NULL DEFAULT 0")
+        .use { it.step() }
+    connection.prepare("ALTER TABLE `discovered_items` ADD COLUMN `nextProcessingAtEpochMillis` INTEGER")
+        .use { it.step() }
+    connection.prepare("ALTER TABLE `discovered_items` ADD COLUMN `lastProcessingError` TEXT")
+        .use { it.step() }
+    connection.prepare("CREATE INDEX IF NOT EXISTS `index_discovered_items_nextProcessingAtEpochMillis` ON `discovered_items` (`nextProcessingAtEpochMillis`)")
+        .use { it.step() }
+
     connection.prepare(
         """
         CREATE TABLE IF NOT EXISTS `inbox_items` (
