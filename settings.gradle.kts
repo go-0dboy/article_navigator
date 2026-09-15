@@ -18,6 +18,7 @@ rootProject.name = "article-navigator"
 
 include(":app")
 include(":core:model")
+include(":core:data")
 include(":collector:api")
 include(":pipeline")
 include(":storage:database")
