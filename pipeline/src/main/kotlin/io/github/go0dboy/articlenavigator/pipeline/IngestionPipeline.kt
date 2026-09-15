@@ -1,6 +1,5 @@
 package io.github.go0dboy.articlenavigator.pipeline
 
-import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
 import io.github.go0dboy.articlenavigator.collector.api.UrlCanonicalizer
 import io.github.go0dboy.articlenavigator.core.data.InboxRepository
@@ -22,10 +21,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import kotlin.math.min
-
-fun interface ContentFetcher {
-    suspend fun fetch(source: Source, item: DiscoveredItem): FetchResult
-}
+import kotlinx.coroutines.CancellationException
 
 fun interface SourceAdapterResolver {
     fun resolve(source: Source): SourceAdapter?
@@ -116,7 +112,6 @@ class IngestionPipeline(
                 canonicalUrl = canonicalUrl,
                 contentHash = contentHash,
                 status = DiscoveryStatus.FETCHED,
-                processingAttempts = item.processingAttempts,
                 nextProcessingAt = null,
                 lastProcessingError = null,
             )
@@ -191,6 +186,8 @@ class IngestionPipeline(
                 ),
             )
             Outcome.ADDED
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             fail(item, now, error)
         }
