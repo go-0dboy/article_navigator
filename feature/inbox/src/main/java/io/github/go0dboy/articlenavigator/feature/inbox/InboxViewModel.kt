@@ -7,6 +7,7 @@ import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxPageKey
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,21 +61,22 @@ class InboxViewModel(
         pagingMutex.withLock {
             if (_state.value.loading || _state.value.loadingMore || !_state.value.hasMore) return@withLock
             _state.update { it.copy(loadingMore = true, error = null) }
-            runCatching { repository.loadPage(nextKey, PAGE_SIZE + 1) }
-                .onSuccess { raw ->
-                    val page = raw.take(PAGE_SIZE)
-                    nextKey = page.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
-                    _state.update { current ->
-                        current.copy(
-                            items = (current.items + page).distinctBy { it.id },
-                            loadingMore = false,
-                            hasMore = raw.size > PAGE_SIZE,
-                        )
-                    }
+            try {
+                val raw = repository.loadPage(nextKey, PAGE_SIZE + 1)
+                val page = raw.take(PAGE_SIZE)
+                nextKey = page.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
+                _state.update { current ->
+                    current.copy(
+                        items = (current.items + page).distinctBy { it.id },
+                        loadingMore = false,
+                        hasMore = raw.size > PAGE_SIZE,
+                    )
                 }
-                .onFailure { error ->
-                    _state.update { it.copy(loadingMore = false, error = error.message ?: "Не удалось загрузить Inbox") }
-                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.update { it.copy(loadingMore = false, error = error.message ?: "Не удалось загрузить Inbox") }
+            }
         }
     }
 
@@ -116,6 +118,8 @@ class InboxViewModel(
             _state.update { it.copy(busyIds = it.busyIds + id, error = null) }
             try {
                 action()
+            } catch (error: CancellationException) {
+                throw error
             } catch (error: Exception) {
                 _state.update { it.copy(error = error.message ?: "Операция не выполнена") }
             } finally {
@@ -128,29 +132,30 @@ class InboxViewModel(
         pagingMutex.withLock {
             val showSpinner = _state.value.items.isEmpty()
             _state.update { it.copy(loading = showSpinner, error = null) }
-            runCatching { repository.loadPage(null, PAGE_SIZE + 1) }
-                .onSuccess { raw ->
-                    val page = raw.take(PAGE_SIZE)
-                    nextKey = page.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
-                    _state.update {
-                        it.copy(
-                            items = page,
-                            loading = false,
-                            loadingMore = false,
-                            hasMore = raw.size > PAGE_SIZE,
-                        )
-                    }
+            try {
+                val raw = repository.loadPage(null, PAGE_SIZE + 1)
+                val page = raw.take(PAGE_SIZE)
+                nextKey = page.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
+                _state.update {
+                    it.copy(
+                        items = page,
+                        loading = false,
+                        loadingMore = false,
+                        hasMore = raw.size > PAGE_SIZE,
+                    )
                 }
-                .onFailure { error ->
-                    nextKey = null
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            loadingMore = false,
-                            error = error.message ?: "Не удалось загрузить Inbox",
-                        )
-                    }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                nextKey = null
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        loadingMore = false,
+                        error = error.message ?: "Не удалось загрузить Inbox",
+                    )
                 }
+            }
         }
     }
 
