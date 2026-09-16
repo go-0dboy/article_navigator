@@ -4,10 +4,8 @@ import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
 import io.github.go0dboy.articlenavigator.collector.api.UrlCanonicalizer
 import io.github.go0dboy.articlenavigator.core.data.ArticleProcessingLease
-import io.github.go0dboy.articlenavigator.core.data.InboxRepository
 import io.github.go0dboy.articlenavigator.core.data.IngestionFinalizeOutcome
 import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
-import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
@@ -45,10 +43,6 @@ data class IngestionReport(
 class IngestionPipeline(
     private val sourceRepository: SourceRepository,
     private val ingestionRepository: IngestionRepository,
-    // Kept in the constructor for source compatibility with Phase 4 callers/tests. Runtime finalisation
-    // is deliberately routed only through IngestionRepository's atomic ownership boundary.
-    @Suppress("unused") private val inboxRepository: InboxRepository,
-    @Suppress("unused") private val knowledgeRepository: KnowledgeRepository,
     private val adapterResolver: SourceAdapterResolver,
     private val extractor: ContentExtractor = DefaultContentExtractor(),
     private val clock: Clock = Clock.systemUTC(),
