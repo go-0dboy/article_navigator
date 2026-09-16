@@ -55,9 +55,12 @@ class IngestionPipeline(
     suspend fun processReady(
         limit: Int = 20,
         isUnmeteredNetwork: Boolean = true,
+        deadline: Instant? = null,
     ): IngestionReport {
         require(limit > 0)
         val runStartedAt = clock.instant()
+        val localDeadline = runStartedAt.plus(maxRunDuration)
+        val effectiveDeadline = deadline?.takeIf { it < localDeadline } ?: localDeadline
         var claimed = 0
         var added = 0
         var merged = 0
@@ -69,7 +72,7 @@ class IngestionPipeline(
 
         while (claimed < limit) {
             val now = clock.instant()
-            if (Duration.between(runStartedAt, now) >= maxRunDuration) {
+            if (!now.isBefore(effectiveDeadline)) {
                 budgetExhausted = true
                 break
             }
