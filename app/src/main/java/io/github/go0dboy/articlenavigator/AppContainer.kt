@@ -31,7 +31,6 @@ import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionReposit
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionStateRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomInboxRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomIngestionRepository
-import io.github.go0dboy.articlenavigator.storage.database.RoomKnowledgeRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomSourceRepository
 import java.time.Duration
 import java.time.Instant
@@ -53,7 +52,6 @@ class AppContainer(
     private val ingestionRepository = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
     private val stateRepository = RoomCollectionStateRepository(database.collectionStateDao())
     private val inboxRepository = RoomInboxRepository(database.inboxDao(), database.inboxLifecycleDao())
-    private val knowledgeRepository = RoomKnowledgeRepository(database.documentDao())
 
     private val adapterRegistry = SourceAdapterRegistry(
         listOf(RssAtomSourceAdapter(OkHttpTransport())),
@@ -69,8 +67,6 @@ class AppContainer(
     private val ingestionPipeline = IngestionPipeline(
         sourceRepository = sourceRepository,
         ingestionRepository = ingestionRepository,
-        inboxRepository = inboxRepository,
-        knowledgeRepository = knowledgeRepository,
         adapterResolver = SourceAdapterResolver(adapterRegistry::resolve),
     )
 
