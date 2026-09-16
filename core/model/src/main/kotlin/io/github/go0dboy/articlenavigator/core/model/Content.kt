@@ -43,10 +43,19 @@ data class DiscoveredItem(
     val lastProcessingError: String? = null,
 )
 
+/**
+ * Durable temporary copy of a successful HTTP response.
+ *
+ * [payload] contains the exact response bytes observed by the fetcher. [contentType] preserves the
+ * complete Content-Type header (including charset when present), while [resolvedUrl] preserves the
+ * final URL after redirects. This is sufficient to resume extraction after process death without
+ * repeating the request while the temporary response remains valid.
+ */
 data class RawContent(
     val discoveredItemId: DiscoveredItemId,
-    val mimeType: String?,
-    val payload: String,
+    val contentType: String?,
+    val payload: ByteArray,
+    val resolvedUrl: String?,
     val fetchedAt: Instant,
     val httpStatus: Int,
     val expiresAt: Instant?,
