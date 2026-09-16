@@ -4,6 +4,7 @@ import androidx.room3.Room
 import androidx.room3.testing.MigrationTestHelper
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+import androidx.test.platform.app.InstrumentationRegistry
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
@@ -16,15 +17,20 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class MigrationFullChainV5Test {
     @Test
     fun exportedVersion1MigratesThroughEverySupportedStepToCurrentRoom() = runTest {
         val databaseFile = Files.createTempFile("article-navigator-full-chain", ".db")
         Files.deleteIfExists(databaseFile)
         val helper = MigrationTestHelper(
-            schemaDirectoryPath = schemaDirectory(),
-            databasePath = databaseFile,
+            instrumentation = InstrumentationRegistry.getInstrumentation(),
+            file = databaseFile.toFile(),
             driver = BundledSQLiteDriver(),
             databaseClass = ArticleNavigatorDatabase::class,
         )
@@ -126,20 +132,6 @@ class MigrationFullChainV5Test {
             Files.deleteIfExists(Path.of(databaseFile.toString() + "-wal"))
             Files.deleteIfExists(Path.of(databaseFile.toString() + "-shm"))
         }
-    }
-
-    private fun schemaDirectory(): Path {
-        val candidates = listOf(
-            Path.of("schemas"),
-            Path.of("storage", "database", "schemas"),
-        )
-        return candidates.firstOrNull { candidate ->
-            Files.exists(
-                candidate.resolve(
-                    "io.github.go0dboy.articlenavigator.storage.database.ArticleNavigatorDatabase",
-                ).resolve("1.json"),
-            )
-        } ?: error("Cannot locate exported Room schemas from ${Path.of("").toAbsolutePath()}")
     }
 
     private fun seedVersion1(connection: SQLiteConnection, rawText: String) {
