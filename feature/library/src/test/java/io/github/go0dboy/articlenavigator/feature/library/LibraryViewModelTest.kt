@@ -8,6 +8,7 @@ import io.github.go0dboy.articlenavigator.core.model.LibraryItem
 import io.github.go0dboy.articlenavigator.core.model.LibraryPageKey
 import io.github.go0dboy.articlenavigator.core.model.SavedDocument
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -92,16 +94,43 @@ class LibraryViewModelTest {
         }
     }
 
+    @Test
+    fun cancelledBackgroundRefreshIsNotConvertedIntoUiFailure() = runTest {
+        val main = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(main)
+        try {
+            val repository = FakeLibraryRepository()
+            repository.replace(listOf(item(1)), emitRevision = false)
+            val viewModel = LibraryViewModel(repository)
+            advanceUntilIdle()
+            assertNull(viewModel.state.value.error)
+
+            repository.nextLoadFailure = CancellationException("view model left")
+            repository.revision.value += 1
+            advanceUntilIdle()
+
+            assertNull(viewModel.state.value.error)
+            assertEquals(1, viewModel.state.value.items.size)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
     private class FakeLibraryRepository : LibraryRepository {
         val revision = MutableStateFlow(0L)
         val count = MutableStateFlow(0)
         var rows: List<LibraryItem> = emptyList()
+        var nextLoadFailure: Throwable? = null
         val documents = mutableMapOf<DocumentId, MutableStateFlow<SavedDocument?>>()
 
         override fun observeRevision(): Flow<Long> = revision
         override fun observeSavedCount(): Flow<Int> = count
 
         override suspend fun loadPage(after: LibraryPageKey?, limit: Int): List<LibraryItem> {
+            nextLoadFailure?.let { failure ->
+                nextLoadFailure = null
+                throw failure
+            }
             val ordered = rows.sortedWith(compareByDescending<LibraryItem> { it.savedAt }.thenByDescending { it.id.value })
             return ordered.asSequence()
                 .filter { candidate ->
