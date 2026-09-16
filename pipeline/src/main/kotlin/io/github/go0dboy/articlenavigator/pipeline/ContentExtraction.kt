@@ -177,10 +177,10 @@ class DefaultContentExtractor : ContentExtractor {
     private companion object {
         const val METADATA_PROBE_BYTES = 8192
         val META_CHARSET = Regex(
-            """(?is)<meta\\b[^>]*\\bcharset\\s*=\\s*[\"']?\\s*([A-Za-z0-9._:+-]+)""",
+            """(?is)<meta\b[^>]*\bcharset\s*=\s*["']?\s*([A-Za-z0-9._:+-]+)""",
         )
         val XML_ENCODING = Regex(
-            """(?is)<\\?xml\\b[^>]*\\bencoding\\s*=\\s*[\"']\\s*([A-Za-z0-9._:+-]+)""",
+            """(?is)<\?xml\b[^>]*\bencoding\s*=\s*["']\s*([A-Za-z0-9._:+-]+)""",
         )
     }
 }
