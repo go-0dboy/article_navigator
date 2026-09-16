@@ -111,7 +111,7 @@ class InboxViewModelTest {
             return ordered.asSequence()
                 .filter { candidate ->
                     after == null || candidate.createdAt < after.createdAt ||
-                        (candidate.createdAt == after.createdAt && candidate.id.value < after.inboxItemId.value)
+                        (candidate.createdAt == after.createdAt && candidate.id.value < after.itemId.value)
                 }
                 .take(limit)
                 .toList()
