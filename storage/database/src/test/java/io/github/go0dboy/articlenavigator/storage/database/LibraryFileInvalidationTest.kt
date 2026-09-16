@@ -138,7 +138,17 @@ class LibraryFileInvalidationTest {
                 }
 
                 val firstRevision = withTimeout(5_000) { firstEmission.await() }
-                assertEquals(document.id, inbox.saveCurrent(update.id, now.plusSeconds(30), "ignored"))
+                val savedId = try {
+                    inbox.saveCurrent(update.id, now.plusSeconds(30), "ignored")
+                } catch (failure: Throwable) {
+                    val chain = generateSequence<Throwable?>(failure) { it.cause }
+                        .filterNotNull()
+                        .joinToString(" -> ") { cause ->
+                            "${cause::class.qualifiedName}: ${cause.message}"
+                        }
+                    throw AssertionError("saveCurrent failed while observeRevision was active: $chain", failure)
+                }
+                assertEquals(document.id, savedId)
                 val secondRevision = withTimeout(5_000) { secondEmission.await() }
                 collector.join()
 
