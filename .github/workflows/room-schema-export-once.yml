@@ -1,0 +1,40 @@
+name: Room schema export once
+
+on:
+  push:
+    branches:
+      - fix/reliability-stage2
+
+permissions:
+  contents: write
+
+jobs:
+  export-room-schema:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/reliability-stage2
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+      - name: Generate Room schema from current entities
+        run: ./gradlew :storage:database:kspDebugKotlin --stacktrace
+      - name: Commit generated schema only when changed
+        run: |
+          if git diff --quiet -- storage/database/schemas; then
+            echo "Room schemas already match generated output"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add storage/database/schemas
+          git commit -m "Commit generated Room v5 schema"
+          git push origin HEAD:fix/reliability-stage2
