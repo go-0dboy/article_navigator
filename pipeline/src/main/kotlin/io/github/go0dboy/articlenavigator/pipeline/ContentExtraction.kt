@@ -60,13 +60,18 @@ class DefaultContentExtractor : ContentExtractor {
         }
     }
 
+    /**
+     * Plain text intentionally remains text-only. Its historical identity is SHA-256 of
+     * normalizedText; wrapping it in generated HTML would create a false new content version after
+     * upgrading the extractor even when the readable source bytes did not change.
+     */
     private fun extractPlainText(body: ByteArray, contentType: String?): ExtractedContent {
         val normalized = normalizeText(decodeText(body, contentType))
         return ExtractedContent(
             title = null,
             normalizedText = normalized,
-            structuredContentFormat = ContentFormats.SAFE_HTML_V1,
-            structuredContent = plainTextToSafeHtml(normalized),
+            structuredContentFormat = null,
+            structuredContent = null,
         )
     }
 
@@ -119,20 +124,6 @@ class DefaultContentExtractor : ContentExtractor {
             structuredContentFormat = safeHtml?.let { ContentFormats.SAFE_HTML_V1 },
             structuredContent = safeHtml,
         )
-    }
-
-    private fun plainTextToSafeHtml(value: String): String {
-        val document = Jsoup.parseBodyFragment("")
-        document.outputSettings().prettyPrint(false)
-        val body = document.body()
-        value.split(Regex("\\n{2,}")).forEach { paragraph ->
-            val element = body.appendElement("p")
-            paragraph.split('\n').forEachIndexed { index, line ->
-                if (index > 0) element.appendElement("br")
-                element.appendText(line)
-            }
-        }
-        return body.html().trim()
     }
 
     private fun httpUrlOrNull(value: String): String? {
