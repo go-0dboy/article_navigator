@@ -141,14 +141,20 @@ private fun ArticleNavigatorApp(container: AppContainer) {
                     onRefresh = { scope.launch { refreshData(reportErrors = true) } },
                     onReject = { id ->
                         runAction("Помечаю материал как неинтересный…") {
-                            container.rejectInbox(id)
-                            "Материал исключён из будущих повторов"
+                            if (container.rejectInbox(id)) {
+                                "Материал исключён из будущих повторов"
+                            } else {
+                                "Материал уже обработан другим действием"
+                            }
                         }
                     },
                     onReadAndDiscard = { id ->
                         runAction("Закрываю материал без сохранения…") {
-                            container.readAndDiscardInbox(id)
-                            "Материал отмечен прочитанным без сохранения"
+                            if (container.readAndDiscardInbox(id)) {
+                                "Материал отмечен прочитанным без сохранения"
+                            } else {
+                                "Материал уже обработан другим действием"
+                            }
                         }
                     },
                     onSave = { id ->
