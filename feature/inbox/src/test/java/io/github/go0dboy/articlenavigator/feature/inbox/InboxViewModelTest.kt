@@ -6,6 +6,7 @@ import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxPageKey
 import java.time.Instant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -93,6 +94,36 @@ class InboxViewModelTest {
 
             viewModel.consumeSavedNavigation()
             assertNull(viewModel.state.value.savedDocumentToOpen)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun cancelledInboxActionIsNotConvertedIntoUiFailure() = runTest {
+        val main = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(main)
+        try {
+            val repository = FakeInboxRepository()
+            val pending = item(7)
+            repository.replace(listOf(pending), emitRevision = false)
+            val actions = object : InboxActions {
+                override suspend fun save(id: InboxItemId): DocumentId {
+                    throw CancellationException("screen left")
+                }
+
+                override suspend fun reject(id: InboxItemId): Boolean = true
+                override suspend fun readAndDiscard(id: InboxItemId): Boolean = true
+            }
+            val viewModel = InboxViewModel(repository, actions)
+            advanceUntilIdle()
+
+            viewModel.save(pending.id)
+            advanceUntilIdle()
+
+            assertNull(viewModel.state.value.error)
+            assertNull(viewModel.state.value.savedDocumentToOpen)
+            assertFalse(pending.id in viewModel.state.value.busyIds)
         } finally {
             Dispatchers.resetMain()
         }
