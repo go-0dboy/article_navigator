@@ -22,8 +22,10 @@ import java.time.Instant
 import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CollectionOrchestratorTest {
@@ -90,6 +92,39 @@ class CollectionOrchestratorTest {
         assertNull(repos.states[source.id])
     }
 
+    @Test
+    fun unmeteredSourcesDoNotConsumeMeteredSourceLimit() = runTest {
+        val wifiA = source("wifi-a", unmetered = true)
+        val wifiB = source("wifi-b", unmetered = true)
+        val metered = source("metered")
+        val repos = Repositories(listOf(wifiA, wifiB, metered))
+
+        val report = orchestrator(repos, FakeAdapter(), maxSourcesPerRun = 1)
+            .run(CollectionRunContext(isUnmeteredNetwork = false))
+
+        assertEquals(1, report.successes)
+        assertEquals(2, report.skipped)
+        assertEquals(now.plusSeconds(3600), repos.sources[metered.id]?.nextCheckAt)
+        assertEquals(now, repos.sources[wifiA.id]?.nextCheckAt)
+        assertEquals(now, repos.sources[wifiB.id]?.nextCheckAt)
+        assertFalse(report.budgetExhausted)
+    }
+
+    @Test
+    fun sourceCapRequestsContinuationAndLeavesRemainingSourceDue() = runTest {
+        val first = source("first")
+        val second = source("second")
+        val third = source("third")
+        val repos = Repositories(listOf(first, second, third))
+
+        val report = orchestrator(repos, FakeAdapter(), maxSourcesPerRun = 2)
+            .run(CollectionRunContext(isUnmeteredNetwork = true))
+
+        assertEquals(2, report.successes)
+        assertTrue(report.budgetExhausted)
+        assertEquals(listOf(third.id), repos.findDue(now).map { it.id })
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun registryRejectsDuplicateAdapterKeys() {
         SourceAdapterRegistry(listOf(FakeAdapter(), FakeAdapter()))
@@ -113,13 +148,18 @@ class CollectionOrchestratorTest {
         assertNull(registry.resolve(incompatible))
     }
 
-    private fun orchestrator(repos: Repositories, adapter: SourceAdapter) = CollectionOrchestrator(
+    private fun orchestrator(
+        repos: Repositories,
+        adapter: SourceAdapter,
+        maxSourcesPerRun: Int = 64,
+    ) = CollectionOrchestrator(
         sourceRepository = repos,
         collectionRepository = repos,
         adapterRegistry = SourceAdapterRegistry(listOf(adapter)),
         retryPolicy = RetryPolicy(maxAttempts = 4, initialDelay = Duration.ofSeconds(5), maxDelay = Duration.ofMinutes(1)),
         clock = clock,
         maxParallelism = 2,
+        maxSourcesPerRun = maxSourcesPerRun,
         runTokenFactory = { "test-token-${repos.nextToken++}" },
     )
 
