@@ -6,6 +6,7 @@ import io.github.go0dboy.articlenavigator.collector.api.DiscoveryResult
 import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
 import io.github.go0dboy.articlenavigator.core.data.IngestionFinalizeOutcome
+import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
@@ -32,7 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -76,7 +77,7 @@ class ReliabilityStage2RegressionTest {
     }
 
     @Test
-    fun twoHandlersCannotFetchTheSameDiscovery() = runTest {
+    fun twoHandlersCannotFetchTheSameDiscovery() = runBlocking {
         sources.upsert(sourceA)
         val discovery = discovery("race-fetch", sourceA, "https://example.test/race")
         ingestion.upsertDiscovered(discovery)
@@ -109,7 +110,7 @@ class ReliabilityStage2RegressionTest {
     }
 
     @Test
-    fun expiredOwnerCannotPersistRawFailureSuccessOrReleaseReplacementLease() = runTest {
+    fun expiredOwnerCannotPersistRawFailureSuccessOrReleaseReplacementLease() = runBlocking {
         sources.upsert(sourceA)
         val discovery = discovery("lease-replacement", sourceA, "https://example.test/lease")
         ingestion.upsertDiscovered(discovery)
@@ -169,7 +170,35 @@ class ReliabilityStage2RegressionTest {
     }
 
     @Test
-    fun saveCommittedBeforeLateOriginRoutesThatOriginIntoSavedDocument() = runTest {
+    fun infrastructureFailureAfterClaimReleasesLeaseForImmediateRetry() = runBlocking {
+        sources.upsert(sourceA)
+        val discovery = discovery("infra-release", sourceA, "https://example.test/infra")
+        ingestion.upsertDiscovered(discovery)
+        val brokenSources = object : SourceRepository by sources {
+            override suspend fun findById(id: SourceId): Source? {
+                throw IllegalStateException("shared storage unavailable after claim")
+            }
+        }
+
+        val failure = runCatching {
+            pipeline(adapter(::success), brokenSources).processReady(limit = 1)
+        }.exceptionOrNull()
+
+        assertNotNull(failure)
+        assertTrue(failure is IllegalStateException)
+        assertNull(database.articleProcessingDao().item(discovery.id.value)?.processingLeaseToken)
+        val retryLease = ingestion.tryClaimNext(
+            "retry-owner",
+            now,
+            now.plusSeconds(60),
+            isUnmeteredNetwork = true,
+        )
+        assertNotNull(retryLease)
+        ingestion.releaseProcessing(checkNotNull(retryLease))
+    }
+
+    @Test
+    fun saveCommittedBeforeLateOriginRoutesThatOriginIntoSavedDocument() = runBlocking {
         val seeded = seedSharedInbox()
         val discoveryB = discovery("origin-b", sourceB, seeded.item.canonicalUrl)
         ingestion.upsertDiscovered(discoveryB)
@@ -200,7 +229,7 @@ class ReliabilityStage2RegressionTest {
     }
 
     @Test
-    fun rejectCommittedWhileOldProcessingRunsCannotRecreateInbox() = runTest {
+    fun rejectCommittedWhileOldProcessingRunsCannotRecreateInbox() = runBlocking {
         val seeded = seedSharedInbox()
         val discoveryB = discovery("reject-origin-b", sourceB, seeded.item.canonicalUrl)
         ingestion.upsertDiscovered(discoveryB)
@@ -229,7 +258,7 @@ class ReliabilityStage2RegressionTest {
     }
 
     @Test
-    fun saveAndRejectRaceHasExactlyOneCommittedWinnerAndRepeatSaveFails() = runTest {
+    fun saveAndRejectRaceHasExactlyOneCommittedWinnerAndRepeatSaveFails() = runBlocking {
         val seeded = seedSharedInbox()
         val service = InboxService(inbox, clock)
         val start = CompletableDeferred<Unit>()
@@ -269,7 +298,7 @@ class ReliabilityStage2RegressionTest {
     }
 
     @Test
-    fun sameMaterialFromTwoSourcesProducesOneInboxWithBothOrigins() = runTest {
+    fun sameMaterialFromTwoSourcesProducesOneInboxWithBothOrigins() = runBlocking {
         sources.upsert(sourceA)
         sources.upsert(sourceB)
         val a = discovery("same-a", sourceA, "https://example.test/a-copy")
@@ -313,8 +342,11 @@ class ReliabilityStage2RegressionTest {
         return SeededInbox(item, originA)
     }
 
-    private fun pipeline(adapter: SourceAdapter) = IngestionPipeline(
-        sourceRepository = sources,
+    private fun pipeline(
+        adapter: SourceAdapter,
+        sourceRepository: SourceRepository = sources,
+    ) = IngestionPipeline(
+        sourceRepository = sourceRepository,
         ingestionRepository = ingestion,
         adapterResolver = SourceAdapterResolver { adapter },
         clock = clock,
