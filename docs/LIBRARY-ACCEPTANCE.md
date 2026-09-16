@@ -134,4 +134,5 @@ The PR must remain unmerged until merge is a separate explicit decision. No auto
 - no full-page/offline asset archiving: normalized extracted text is the durable reading format;
 - no app-level Activity/Compose recreation test yet;
 - scheduler successful-continuation and infrastructure retry currently share WorkManager retry/backoff history; tracked in #18;
+- the current runtime wires only `DefaultContentExtractor`; before adding any alternative extractor the extraction contract must make its durable parser version explicit, tracked in #19;
 - exact full-text search, export/restore and Android Share intake are separate later product stages.
