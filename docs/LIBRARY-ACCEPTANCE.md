@@ -92,31 +92,76 @@ Automated evidence:
 - `LibraryFilePersistenceTest`
 - existing PR #16 provenance and Inbox lifecycle integration tests remain part of the full test suite.
 
-## 7. Inbox paging and reactive state
+## 7. Reactive state and bounded pagination refresh
 
 Acceptance criteria:
-- Inbox exposes exact pending count independently from the currently loaded page;
+- Inbox and Library expose exact counts independently from the currently loaded page;
 - keyset pagination is stable for datasets larger than one page and for equal timestamps;
-- Room invalidation updates visible state without explicit two-second application polling;
-- Save removes the consumed Inbox item and publishes the resulting `DocumentId` for Library navigation;
-- action execution belongs to ViewModel scope rather than a composition-owned coroutine.
+- background invalidation refreshes the already loaded bounded range instead of collapsing the screen back to the first 20 rows;
+- after a refresh error the visible rows, next key and `hasMore` remain mutually consistent;
+- retry refreshes the same loaded window, and the next `loadMore` continues from the preserved/recomputed key rather than starting again from page one;
+- Save of an Inbox row after multiple pages are loaded removes that row, backfills the loaded window from the next row, and preserves a valid continuation cursor;
+- Flow failures are visible UI state rather than an empty list or an endless spinner;
+- retry cancels the prior observation job before reconnecting, so repeated retry cannot accumulate duplicate subscriptions;
+- `CancellationException` is propagated and is not presented as a database/UI error.
 
 Automated evidence:
 - `InboxPagingIntegrationTest`
-- `InboxViewModelTest`
-- `LibraryViewModelTest` for equivalent Library invalidation/paging behavior.
+- `InboxViewModelTest`, including multi-page Save/removal, equal-timestamp paging, failed refresh/retry and subscription reconnection;
+- `LibraryViewModelTest`, including multi-page background insertion/update, failed refresh/retry and subscription/detail reconnection.
 
-## 8. Android lifecycle boundary
+## 8. Application-level count subscriptions
+
+The top-level Inbox/Library badges no longer collect Room count Flows directly with an implicit `0` fallback. `AppCountsViewModel` owns one reconnectable observation job and retains the last successful values if observation fails.
+
+Acceptance criteria:
+- an observation failure is visible above the section selector;
+- before the first successful value the badge renders `?` rather than falsely reporting zero;
+- retry cancels the prior observation job and starts one new pair of count subscriptions;
+- subsequent count changes are visible after reconnect;
+- cancellation is not converted into a database-error message.
+
+Automated evidence:
+- `AppCountsViewModelTest`.
+
+## 9. Save while Library is actively observed
+
+CI #321 originally exposed two independent test classes of failure and they were handled separately.
+
+### Robolectric SDK mismatch
+
+`LibraryAndroidBuilderIntegrationTest` originally inherited the application target SDK and Robolectric 4.16.1 refused to run it because target SDK 37 exceeded that runner's supported maximum. Production `compileSdk`/`targetSdk` were not changed. The test is explicitly pinned to Robolectric SDK 35, which is supported by the current JDK 17/Robolectric toolchain.
+
+### Host-JVM/path-builder SQL failures
+
+The remaining diagnostic failures occurred only in tests that opened Room through the contextless JVM/path builder while running inside the Android unit-test module. The same full operation succeeds through the builder used by the application: `Room.databaseBuilder<ArticleNavigatorDatabase>(Context, name)` + `BundledSQLiteDriver`.
+
+The retained regression `LibraryAndroidBuilderIntegrationTest` now keeps both `observeSavedCount()` and `observeRevision()` active while `saveCurrent(existingDocument)` performs the complete transactional update. It additionally uses the same provenance key before and after Save, so neither saved-document count nor provenance count changes. The test requires a second revision invalidation emission with the same scalar value and then verifies:
+- updated title/text;
+- original `createdAt` preserved;
+- `updatedAt` advanced;
+- exactly two document versions;
+- provenance remains one row for the same origin;
+- consumed Inbox row is gone.
+
+A separate file-backed close/reopen regression keeps proving that an existing saved document can be updated transactionally and that versions/provenance survive a new Room runtime.
+
+The earlier contextless connection-pool / explicit-transaction / invalidation probes were useful for narrowing the failure but did not represent the application's Android builder. After their hypotheses were exhausted they were removed rather than retained as permanently red duplicates. The stronger Android-builder behavior check remains enabled.
+
+**Evidence boundary:** the current repository/connected CI does not provide an Android emulator system image or a physical device. Therefore this PR has Robolectric SDK35 coverage using the production-style Android Room builder plus file-backed JVM reopen tests, but it does **not** claim a physical-device/emulator execution of this scenario.
+
+## 10. Android lifecycle boundary
 
 Implemented behavior:
 - `MainActivity` stores the selected top-level section and selected saved `DocumentId` with `rememberSaveable`;
-- Inbox and Library collect repository state through lifecycle-aware Compose collection;
+- Inbox, Library and top-level counts are collected through lifecycle-aware Compose state backed by ViewModels;
 - Inbox and Library actions/state live in ViewModels rather than in a transient composable coroutine;
-- Sources/Diagnostics still refresh on section entry; Inbox/Library depend on Room/Flow invalidation instead of periodic polling.
+- Sources/Diagnostics still refresh on section entry; Inbox/Library depend on Room/Flow invalidation instead of periodic polling;
+- closing Library detail clears the saveable selected id, while opening a row or successful Inbox Save updates it.
 
-Automated evidence currently covers ViewModel recreation-independent state transitions and Room invalidation. There is **no dedicated end-to-end Activity/Compose recreation test in this PR** that rotates/recreates `MainActivity` and asserts the rendered screen after recreation. The repository currently has no app-level Compose activity test harness. This is a UI-test coverage limitation, not a known data-integrity defect; the persisted Library data itself is covered by file-backed close/reopen tests.
+Automated evidence covers ViewModel state/reconnection, Room invalidation and file-backed persistence. There is **no dedicated end-to-end Activity/Compose recreation or physical process-death test in this PR** that recreates `MainActivity` and asserts the rendered screen afterward. The repository currently has no app-level Compose activity test harness. This is a UI-test coverage limitation, not a known data-integrity defect; durable Library data itself is covered by file-backed close/reopen tests.
 
-## 9. CI / release gate
+## 11. CI / release gate
 
 PR #17 may leave Draft only when the exact current head passes all repository gates:
 - wrapper validation and clean-checkout toolchain;
@@ -132,7 +177,8 @@ The PR must remain unmerged until merge is a separate explicit decision. No auto
 ## Remaining non-blocking limits
 
 - no full-page/offline asset archiving: normalized extracted text is the durable reading format;
-- no app-level Activity/Compose recreation test yet;
+- no physical-device/emulator verification in the current CI environment;
+- no app-level Activity/Compose recreation/process-death rendering test yet;
 - scheduler successful-continuation and infrastructure retry currently share WorkManager retry/backoff history; tracked in #18;
 - the current runtime wires only `DefaultContentExtractor`; before adding any alternative extractor the extraction contract must make its durable parser version explicit, tracked in #19;
 - exact full-text search, export/restore and Android Share intake are separate later product stages.
