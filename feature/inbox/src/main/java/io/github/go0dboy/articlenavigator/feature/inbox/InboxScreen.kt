@@ -76,16 +76,17 @@ fun InboxScreen(
     onReadAndDiscard: (InboxItemId) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val blockingError = state.error ?: state.subscriptionError
     when {
         state.loading -> Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             CircularProgressIndicator()
             Text("Загружаю Inbox…")
         }
-        state.error != null && state.items.isEmpty() -> Column(
+        blockingError != null && state.items.isEmpty() -> Column(
             modifier.fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(state.error, color = MaterialTheme.colorScheme.error)
+            Text(blockingError, color = MaterialTheme.colorScheme.error)
             Button(onClick = onRetry) { Text("Повторить") }
         }
         state.items.isEmpty() -> Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -104,6 +105,12 @@ fun InboxScreen(
                 )
                 state.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                state.subscriptionError?.let { observationError ->
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(observationError, color = MaterialTheme.colorScheme.error)
+                        OutlinedButton(onClick = onRetry) { Text("Переподключить обновления") }
+                    }
+                }
             }
             items(state.items, key = { it.id.value }) { item ->
                 InboxCard(
@@ -113,6 +120,9 @@ fun InboxScreen(
                     onReject = onReject,
                     onReadAndDiscard = onReadAndDiscard,
                 )
+            }
+            if (state.error != null) {
+                item { OutlinedButton(onClick = onRetry) { Text("Повторить обновление") } }
             }
             if (state.hasMore || state.loadingMore) {
                 item {
