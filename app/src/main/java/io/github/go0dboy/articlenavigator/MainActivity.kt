@@ -173,6 +173,9 @@ private fun ArticleNavigatorApp(container: AppContainer) {
                     modifier = Modifier.weight(1f),
                     repository = container.libraryRepository,
                     initialDocumentId = selectedLibraryDocumentId?.let(::DocumentId),
+                    onSelectedDocumentChanged = { documentId ->
+                        selectedLibraryDocumentId = documentId?.value
+                    },
                     onOpenExternal = { url ->
                         val result = runCatching {
                             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
