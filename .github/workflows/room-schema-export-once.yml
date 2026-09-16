@@ -31,7 +31,7 @@ jobs:
         run: ./gradlew :storage:database:kspDebugKotlin --stacktrace
       - name: Commit generated schema only when changed
         run: |
-          if git diff --quiet -- storage/database/schemas; then
+          if [ -z "$(git status --porcelain -- storage/database/schemas)" ]; then
             echo "Room schemas already match generated output"
             exit 0
           fi
