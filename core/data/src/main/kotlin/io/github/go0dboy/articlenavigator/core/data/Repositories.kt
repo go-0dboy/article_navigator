@@ -88,14 +88,99 @@ interface CollectionRepository {
     suspend fun release(lease: SourceCollectionLease)
 }
 
+/** Persisted ownership of one article-processing attempt. */
+data class ArticleProcessingLease(
+    val item: DiscoveredItem,
+    val runToken: String,
+    val expiresAt: Instant,
+)
+
+enum class IngestionFinalizeOutcome {
+    ADDED_TO_INBOX,
+    MERGED_INTO_INBOX,
+    ALREADY_KNOWN,
+    STALE,
+}
+
+/**
+ * Article processing uses an expiring persisted lease. The lease does not promise that an old
+ * network socket is physically stopped the instant the lease expires; it promises that only the
+ * current owner may persist raw/intermediate/final results. Replacement owners therefore remain
+ * safe even when an older HTTP call finishes late.
+ */
 interface IngestionRepository {
-    /** Creation/import/test seeding path. Runtime processing transitions must use targeted methods. */
+    /** Creation/import/test seeding path. Runtime processing transitions must use ownership methods. */
     suspend fun upsertDiscovered(item: DiscoveredItem)
     suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem?
     suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem?
     suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem>
 
-    /** Updates only pipeline-owned state and never rewrites discovery timestamps/sightings. */
+    /**
+     * Atomically selects and claims the next eligible item. Network policy is applied before the
+     * limit/selection, so queued unmetered-only work cannot starve eligible work on metered links.
+     */
+    suspend fun tryClaimNext(
+        runToken: String,
+        now: Instant,
+        leaseExpiresAt: Instant,
+        isUnmeteredNetwork: Boolean,
+    ): ArticleProcessingLease? = findReadyForProcessing(now, 1).firstOrNull()?.let {
+        ArticleProcessingLease(it, runToken, leaseExpiresAt)
+    }
+
+    suspend fun releaseProcessing(lease: ArticleProcessingLease) = Unit
+
+    /** Ownership-guarded raw response persistence. */
+    suspend fun storeRawContent(
+        lease: ArticleProcessingLease,
+        content: RawContent,
+        at: Instant,
+    ): Boolean {
+        storeRawContent(content)
+        return true
+    }
+
+    suspend fun loadRawContent(lease: ArticleProcessingLease): RawContent? = loadRawContent(lease.item.id)
+
+    /** Ownership-guarded intermediate transition. */
+    suspend fun markFetched(
+        lease: ArticleProcessingLease,
+        canonicalUrl: String,
+        resolvedUrl: String?,
+        contentHash: String,
+        at: Instant,
+    ): Boolean = markFetched(lease.item.id, canonicalUrl, resolvedUrl, contentHash)
+
+    /** Ownership-guarded retry transition; a successful call releases the processing lease. */
+    suspend fun markFailed(
+        lease: ArticleProcessingLease,
+        processingAttempts: Int,
+        nextProcessingAt: Instant,
+        lastProcessingError: String,
+        at: Instant,
+    ): Boolean = markFailed(lease.item.id, processingAttempts, nextProcessingAt, lastProcessingError)
+
+    /** Ownership-guarded terminal skip; a successful call removes temporary raw content. */
+    suspend fun markSkipped(
+        lease: ArticleProcessingLease,
+        canonicalUrl: String?,
+        lastProcessingError: String,
+        at: Instant,
+    ): Boolean = markSkipped(lease.item.id, canonicalUrl, lastProcessingError)
+
+    /**
+     * Single transactional finalisation boundary for deduplication and Inbox/Knowledge writes.
+     * Implementations must re-check processing ownership inside the transaction.
+     */
+    suspend fun finalizeSuccess(
+        lease: ArticleProcessingLease,
+        item: InboxItem,
+        origin: InboxOrigin,
+        canonicalUrlHash: String,
+        completedAt: Instant,
+    ): IngestionFinalizeOutcome = error("Atomic ingestion finalisation is not implemented")
+
+    /** Legacy/test helpers. Production processing must use the ownership-aware overloads above. */
     suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean
     suspend fun markFetched(
         id: DiscoveredItemId,
@@ -118,15 +203,12 @@ interface IngestionRepository {
 
 interface InboxRepository {
     /**
-     * Atomically stages a fetched item in Inbox and commits its discovery origin:
-     * the referenced discovery becomes PROCESSED and its temporary raw payload is removed.
+     * Atomically stages a fetched item in Inbox and commits its discovery origin.
+     * Runtime ingestion now uses [IngestionRepository.finalizeSuccess]; this path remains for
+     * import/tests and must not be used to bypass processing ownership.
      */
     suspend fun put(item: InboxItem, origin: InboxOrigin)
 
-    /**
-     * Atomically attaches another origin to an existing Inbox item and commits that discovery
-     * with the same PROCESSED/raw-cleanup semantics as [put].
-     */
     suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin)
 
     suspend fun listPending(limit: Int = 100): List<InboxItem>
