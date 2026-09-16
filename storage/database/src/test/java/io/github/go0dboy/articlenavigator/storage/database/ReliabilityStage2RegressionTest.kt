@@ -54,7 +54,7 @@ class ReliabilityStage2RegressionTest {
             .setDriver(BundledSQLiteDriver())
             .build()
         sources = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
-        ingestion = RoomIngestionRepository(database.ingestionDao())
+        ingestion = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
         inbox = RoomInboxRepository(database.inboxDao())
         knowledge = RoomKnowledgeRepository(database.documentDao())
     }
