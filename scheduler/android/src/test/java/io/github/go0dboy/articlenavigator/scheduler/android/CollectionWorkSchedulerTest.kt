@@ -24,7 +24,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36], application = CollectionWorkTestApplication::class)
+@Config(sdk = [35], application = CollectionWorkTestApplication::class)
 class CollectionWorkSchedulerTest {
     private lateinit var context: Context
     private lateinit var application: CollectionWorkTestApplication
