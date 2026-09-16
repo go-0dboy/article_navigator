@@ -31,7 +31,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -55,13 +54,13 @@ class IngestionCrashRecoveryIntegrationTest {
     @Test
     fun claimedWorkBecomesAvailableOnlyAfterPersistedLeaseExpiresAcrossReopen() = runTest {
         withDatabaseFile("claim") { file ->
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 seed(db, discovery("claimed"))
                 val ingestion = runtime(db)
                 assertNotNull(ingestion.tryClaimNext("owner-1", baseTime, baseTime.plusSeconds(30), true))
             }
 
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 val ingestion = runtime(db)
                 assertNull(ingestion.tryClaimNext("too-early", baseTime.plusSeconds(20), baseTime.plusSeconds(60), true))
                 val recovered = ingestion.tryClaimNext(
@@ -82,7 +81,7 @@ class IngestionCrashRecoveryIntegrationTest {
             val item = discovery("raw-recovery")
             val resolved = "https://cdn.example.test/articles/final"
             val contentType = "text/html; charset=utf-8; x-origin=test"
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 seed(db, item)
                 val ingestion = runtime(db)
                 val lease = checkNotNull(
@@ -105,7 +104,7 @@ class IngestionCrashRecoveryIntegrationTest {
                 )
             }
 
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 val persisted = runtime(db).loadRawContent(item.id)
                 assertNotNull(persisted)
                 assertArrayEquals(body, persisted?.payload)
@@ -135,7 +134,7 @@ class IngestionCrashRecoveryIntegrationTest {
     fun fetchedIntermediateStateResumesAfterReopenWithoutHttp() = runTest {
         withDatabaseFile("fetched") { file ->
             val item = discovery("fetched-recovery")
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 seed(db, item)
                 val ingestion = runtime(db)
                 val lease = checkNotNull(ingestion.tryClaimNext("old", baseTime, baseTime.plusSeconds(1), true))
@@ -160,7 +159,7 @@ class IngestionCrashRecoveryIntegrationTest {
                 )
             }
 
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 assertEquals(DiscoveryStatus.FETCHED, runtime(db).findDiscoveredById(item.id)?.status)
                 val fetches = AtomicInteger(0)
                 val report = pipeline(db, baseTime.plusSeconds(2)) {
@@ -179,7 +178,7 @@ class IngestionCrashRecoveryIntegrationTest {
     fun failedFinalizationRollsBackCompletelyAndWorkRecoversAfterReopen() = runTest {
         withDatabaseFile("rollback") { file ->
             val item = discovery("rollback-recovery")
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 seed(db, item)
                 val ingestion = runtime(db)
                 val lease = checkNotNull(ingestion.tryClaimNext("owner", baseTime, baseTime.plusSeconds(1), true))
@@ -228,7 +227,7 @@ class IngestionCrashRecoveryIntegrationTest {
                 assertEquals("owner", db.articleProcessingDao().item(item.id.value)?.processingLeaseToken)
             }
 
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 val fetches = AtomicInteger(0)
                 val report = pipeline(db, baseTime.plusSeconds(2)) {
                     fetches.incrementAndGet()
@@ -247,7 +246,7 @@ class IngestionCrashRecoveryIntegrationTest {
     fun expiredRawIsNotReusedAndSuccessfulRefetchReplacesIt() = runTest {
         withDatabaseFile("expired") { file ->
             val item = discovery("expired-raw")
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 seed(db, item)
                 val ingestion = runtime(db)
                 val lease = checkNotNull(ingestion.tryClaimNext("old", baseTime, baseTime.plusSeconds(1), true))
@@ -268,7 +267,7 @@ class IngestionCrashRecoveryIntegrationTest {
                 )
             }
 
-            openDatabase(file).use { db ->
+            withOpenDatabase(file) { db ->
                 val fetches = AtomicInteger(0)
                 val report = pipeline(db, baseTime.plusSeconds(2)) { fetchedItem ->
                     fetches.incrementAndGet()
@@ -332,6 +331,18 @@ class IngestionCrashRecoveryIntegrationTest {
         Room.databaseBuilder<ArticleNavigatorDatabase>(file.toAbsolutePath().toString())
             .setDriver(BundledSQLiteDriver())
             .build()
+
+    private suspend fun <T> withOpenDatabase(
+        file: Path,
+        block: suspend (ArticleNavigatorDatabase) -> T,
+    ): T {
+        val database = openDatabase(file)
+        return try {
+            block(database)
+        } finally {
+            database.close()
+        }
+    }
 
     private suspend fun withDatabaseFile(name: String, block: suspend (Path) -> Unit) {
         val file = Files.createTempFile("article-navigator-$name", ".db")
