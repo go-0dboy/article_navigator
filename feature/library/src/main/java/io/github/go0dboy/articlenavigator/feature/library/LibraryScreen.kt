@@ -64,6 +64,7 @@ fun LibraryRoute(
     LibraryScreen(
         state = state,
         onRetry = model::retry,
+        onRetryDetail = model::retryDetail,
         onLoadMore = model::loadMore,
         onOpenDocument = { onSelectedDocumentChanged(it) },
         onCloseDocument = { onSelectedDocumentChanged(null) },
@@ -76,29 +77,35 @@ fun LibraryRoute(
 fun LibraryScreen(
     state: LibraryScreenState,
     onRetry: () -> Unit,
+    onRetryDetail: () -> Unit,
     onLoadMore: () -> Unit,
     onOpenDocument: (DocumentId) -> Unit,
     onCloseDocument: () -> Unit,
     onOpenExternal: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val listError = state.error ?: state.subscriptionError
     when {
         state.detailLoading -> LoadingState("Открываю сохранённый материал…", modifier)
         state.selectedDocument != null -> DocumentDetail(
             saved = state.selectedDocument,
+            observationError = state.detailError,
+            onRetry = onRetryDetail,
             onBack = onCloseDocument,
             onOpenExternal = onOpenExternal,
             modifier = modifier,
         )
         state.detailError != null -> ErrorState(
             message = state.detailError,
-            actionLabel = "В библиотеку",
-            onAction = onCloseDocument,
+            actionLabel = "Повторить",
+            onAction = onRetryDetail,
+            secondaryActionLabel = "В библиотеку",
+            onSecondaryAction = onCloseDocument,
             modifier = modifier,
         )
         state.loading -> LoadingState("Загружаю библиотеку…", modifier)
-        state.error != null && state.items.isEmpty() -> ErrorState(
-            message = state.error,
+        listError != null && state.items.isEmpty() -> ErrorState(
+            message = listError,
             actionLabel = "Повторить",
             onAction = onRetry,
             modifier = modifier,
@@ -106,6 +113,7 @@ fun LibraryScreen(
         state.items.isEmpty() -> EmptyLibrary(modifier)
         else -> LibraryList(
             state = state,
+            onRetry = onRetry,
             onLoadMore = onLoadMore,
             onOpenDocument = onOpenDocument,
             modifier = modifier,
@@ -116,6 +124,7 @@ fun LibraryScreen(
 @Composable
 private fun LibraryList(
     state: LibraryScreenState,
+    onRetry: () -> Unit,
     onLoadMore: () -> Unit,
     onOpenDocument: (DocumentId) -> Unit,
     modifier: Modifier,
@@ -131,11 +140,25 @@ private fun LibraryList(
                 modifier = Modifier.padding(top = 12.dp),
             )
         }
+        val observationError = state.subscriptionError
+        if (observationError != null) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(observationError, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry) { Text("Переподключить обновления") }
+                }
+            }
+        }
         items(state.items, key = { it.id.value }) { item ->
             LibraryCard(item, onOpenDocument)
         }
         if (state.error != null) {
-            item { Text(state.error, color = MaterialTheme.colorScheme.error) }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(state.error, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry) { Text("Повторить обновление") }
+                }
+            }
         }
         if (state.hasMore || state.loadingMore) {
             item {
@@ -170,6 +193,8 @@ private fun LibraryCard(item: LibraryItem, onOpenDocument: (DocumentId) -> Unit)
 @Composable
 private fun DocumentDetail(
     saved: SavedDocument,
+    observationError: String?,
+    onRetry: () -> Unit,
     onBack: () -> Unit,
     onOpenExternal: (String) -> Unit,
     modifier: Modifier,
@@ -184,6 +209,14 @@ private fun DocumentDetail(
             Text(document.title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 10.dp))
             document.publishedAt?.let { Text("Опубликовано ${formatInstant(it)}") }
             Text("Сохранено ${formatInstant(document.createdAt)}")
+        }
+        if (observationError != null) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(observationError, color = MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onRetry) { Text("Переподключить материал") }
+                }
+            }
         }
         item {
             Text(document.normalizedText, style = MaterialTheme.typography.bodyLarge)
@@ -246,10 +279,15 @@ private fun ErrorState(
     actionLabel: String,
     onAction: () -> Unit,
     modifier: Modifier,
+    secondaryActionLabel: String? = null,
+    onSecondaryAction: (() -> Unit)? = null,
 ) {
     Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(message, color = MaterialTheme.colorScheme.error)
         Button(onClick = onAction) { Text(actionLabel) }
+        if (secondaryActionLabel != null && onSecondaryAction != null) {
+            OutlinedButton(onClick = onSecondaryAction) { Text(secondaryActionLabel) }
+        }
     }
 }
 
