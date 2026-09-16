@@ -1,0 +1,185 @@
+package io.github.go0dboy.articlenavigator.storage.database
+
+import android.content.Context
+import androidx.room3.Room
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+import androidx.test.core.app.ApplicationProvider
+import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
+import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
+import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
+import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
+import io.github.go0dboy.articlenavigator.core.model.Document
+import io.github.go0dboy.articlenavigator.core.model.DocumentId
+import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
+import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
+import io.github.go0dboy.articlenavigator.core.model.InboxItem
+import io.github.go0dboy.articlenavigator.core.model.InboxItemId
+import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
+import io.github.go0dboy.articlenavigator.core.model.PollPolicy
+import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
+import io.github.go0dboy.articlenavigator.core.model.Source
+import io.github.go0dboy.articlenavigator.core.model.SourceId
+import io.github.go0dboy.articlenavigator.core.model.SourceType
+import java.time.Duration
+import java.time.Instant
+import java.util.UUID
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
+class LibraryAndroidBuilderIntegrationTest {
+    private val now = Instant.parse("2026-09-16T11:00:00Z")
+
+    @Test
+    fun activeLibraryObserversDoNotBlockExistingDocumentSaveThroughProductionStyleAndroidBuilder() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "library-android-builder-${UUID.randomUUID()}.db"
+        context.deleteDatabase(name)
+        val db = Room.databaseBuilder<ArticleNavigatorDatabase>(context, name)
+            .setDriver(BundledSQLiteDriver())
+            .build()
+        try {
+            val source = Source(
+                id = SourceId("android-builder-source"),
+                name = "Android builder source",
+                type = SourceType.RSS,
+                url = "https://example.test/android-builder.xml",
+                enabled = true,
+                pollPolicy = PollPolicy(Duration.ofHours(1)),
+                adapterType = "rss-atom",
+                createdAt = now.minusSeconds(3600),
+                nextCheckAt = now,
+            )
+            val sources = RoomSourceRepository(db.sourceDao(), db.sourceScheduleDao())
+            val ingestion = RoomIngestionRepository(db.ingestionDao(), db.articleProcessingDao())
+            val inbox = RoomInboxRepository(db.inboxDao(), db.inboxLifecycleDao())
+            val knowledge = RoomKnowledgeRepository(db.documentDao())
+            val library = RoomLibraryRepository(db.libraryReadDao())
+            sources.upsert(source)
+
+            val document = Document(
+                id = DocumentId("android-builder-document"),
+                canonicalUrl = "https://example.test/android-builder/article",
+                title = "Before",
+                normalizedText = "Before body",
+                contentHash = "android-builder-v1",
+                createdAt = now,
+                updatedAt = now,
+                disposition = ContentDisposition.SAVED,
+            )
+            knowledge.persist(
+                document = document,
+                version = DocumentVersion(
+                    documentId = document.id,
+                    version = 1,
+                    contentHash = document.contentHash,
+                    normalizedText = document.normalizedText,
+                    fetchedAt = now,
+                    parserVersion = "default-content-extractor-v2",
+                ),
+                provenance = DocumentProvenance(
+                    documentId = document.id,
+                    sourceId = source.id,
+                    discoveredUrl = document.canonicalUrl,
+                    resolvedUrl = document.canonicalUrl,
+                    discoveredAt = now.minusSeconds(30),
+                    fetchedAt = now.minusSeconds(20),
+                    sourceNameSnapshot = source.name,
+                    sourceUrlSnapshot = source.url,
+                    sourceTypeSnapshot = source.type.name,
+                ),
+                fingerprint = SeenFingerprint(
+                    canonicalUrlHash = "android-builder-old-fingerprint",
+                    contentHash = document.contentHash,
+                    sourceId = source.id,
+                    seenAt = now,
+                    disposition = ContentDisposition.SAVED,
+                ),
+            )
+
+            val discovery = DiscoveredItem(
+                id = DiscoveredItemId("android-builder-discovery"),
+                sourceId = source.id,
+                url = document.canonicalUrl,
+                canonicalUrl = document.canonicalUrl,
+                resolvedUrl = document.canonicalUrl,
+                title = "After",
+                discoveredAt = now.plusSeconds(10),
+                status = DiscoveryStatus.FETCHED,
+            )
+            ingestion.upsertDiscovered(discovery)
+            val pending = InboxItem(
+                id = InboxItemId("android-builder-inbox"),
+                canonicalUrl = document.canonicalUrl,
+                title = "After",
+                normalizedText = "After body",
+                contentHash = "android-builder-v2",
+                createdAt = now.plusSeconds(20),
+                updatedAt = now.plusSeconds(20),
+                parserVersion = "default-content-extractor-v2",
+            )
+            inbox.put(
+                pending,
+                InboxOrigin(
+                    inboxItemId = pending.id,
+                    discoveredItemId = discovery.id,
+                    sourceId = source.id,
+                    discoveredUrl = discovery.url,
+                    resolvedUrl = discovery.resolvedUrl,
+                    canonicalUrl = checkNotNull(discovery.canonicalUrl),
+                    discoveredAt = discovery.discoveredAt,
+                    fetchedAt = now.plusSeconds(15),
+                    sourceNameSnapshot = source.name,
+                    sourceUrlSnapshot = source.url,
+                    sourceTypeSnapshot = source.type.name,
+                ),
+            )
+
+            val firstCount = CompletableDeferred<Int>()
+            val firstRevision = CompletableDeferred<Long>()
+            val secondRevision = CompletableDeferred<Long>()
+            val countObserver = launch {
+                library.observeSavedCount().collect { count -> firstCount.complete(count) }
+            }
+            val revisionObserver = launch {
+                var index = 0
+                library.observeRevision().take(2).collect { revision ->
+                    if (index++ == 0) firstRevision.complete(revision) else secondRevision.complete(revision)
+                }
+            }
+            assertEquals(1, withTimeout(5_000) { firstCount.await() })
+            val beforeRevision = withTimeout(5_000) { firstRevision.await() }
+
+            assertEquals(document.id, inbox.saveCurrent(pending.id, now.plusSeconds(30), "ignored"))
+            val afterRevision = withTimeout(5_000) { secondRevision.await() }
+            assertEquals(beforeRevision, afterRevision)
+
+            countObserver.cancelAndJoin()
+            revisionObserver.join()
+
+            val saved = checkNotNull(db.documentDao().findById(document.id.value))
+            assertEquals("After", saved.title)
+            assertEquals("After body", saved.normalizedText)
+            assertEquals(document.createdAt.toEpochMilli(), saved.createdAtEpochMillis)
+            assertEquals(now.plusSeconds(30).toEpochMilli(), saved.updatedAtEpochMillis)
+            assertEquals(2, db.documentDao().versions(document.id.value).size)
+            assertEquals(1, db.documentDao().provenance(document.id.value).size)
+            assertNull(db.inboxLifecycleDao().item(pending.id.value))
+        } finally {
+            db.close()
+            context.deleteDatabase(name)
+        }
+    }
+}

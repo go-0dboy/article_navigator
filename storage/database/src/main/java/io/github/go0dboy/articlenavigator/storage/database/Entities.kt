@@ -122,6 +122,8 @@ data class InboxItemEntity(
     val contentHash: String,
     val createdAtEpochMillis: Long,
     val updatedAtEpochMillis: Long,
+    @ColumnInfo(defaultValue = "'default-content-extractor-v1'")
+    val parserVersion: String = "default-content-extractor-v1",
 )
 
 @Entity(

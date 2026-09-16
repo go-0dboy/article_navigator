@@ -5,6 +5,7 @@ import androidx.room3.testing.MigrationTestHelper
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import androidx.test.platform.app.InstrumentationRegistry
+import io.github.go0dboy.articlenavigator.core.model.ContentParserVersions
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
@@ -64,13 +65,17 @@ class MigrationFullChainV5Test {
             }
 
             helper.runMigrationsAndValidate(
-                5,
-                listOf(MIGRATION_3_4, MIGRATION_4_5),
+                6,
+                listOf(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6),
             ).also { connection ->
                 assertEquals("blob", scalarText(connection, "SELECT typeof(payload) FROM raw_contents WHERE discoveredItemId='item-1'"))
                 assertEquals("text/html; charset=utf-8", scalarText(connection, "SELECT contentType FROM raw_contents WHERE discoveredItemId='item-1'"))
                 assertEquals("https://example.test/article", scalarText(connection, "SELECT resolvedUrl FROM raw_contents WHERE discoveredItemId='item-1'"))
                 assertEquals("Source One", scalarText(connection, "SELECT sourceNameSnapshot FROM inbox_origins WHERE inboxItemId='inbox-1'"))
+                assertEquals(
+                    ContentParserVersions.DEFAULT_EXTRACTOR_V1,
+                    scalarText(connection, "SELECT parserVersion FROM inbox_items WHERE id='inbox-1'"),
+                )
                 assertEquals("Source One", scalarText(connection, "SELECT sourceNameSnapshot FROM document_provenance WHERE documentId='doc-1'"))
                 assertEquals(2L, scalarLong(connection, "SELECT consecutiveFailures FROM source_collection_states WHERE sourceId='source-1'"))
                 assertIndexExists(connection, "index_discovered_items_processingLeaseExpiresAtEpochMillis")
@@ -92,7 +97,7 @@ class MigrationFullChainV5Test {
             // through the current generated Room implementation and read every durable domain.
             val database = Room.databaseBuilder<ArticleNavigatorDatabase>(databaseFile.toAbsolutePath().toString())
                 .setDriver(BundledSQLiteDriver())
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
             try {
                 val sources = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
@@ -113,6 +118,7 @@ class MigrationFullChainV5Test {
 
                 val pending = inbox.findById(InboxItemId("inbox-1"))
                 assertNotNull(pending)
+                assertEquals(ContentParserVersions.DEFAULT_EXTRACTOR_V1, pending?.parserVersion)
                 val origin = inbox.origins(InboxItemId("inbox-1")).single()
                 assertEquals(SourceId("source-1"), origin.sourceId)
                 assertEquals("Source One", origin.sourceNameSnapshot)

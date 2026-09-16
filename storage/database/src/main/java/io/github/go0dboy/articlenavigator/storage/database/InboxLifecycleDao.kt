@@ -3,6 +3,7 @@ package io.github.go0dboy.articlenavigator.storage.database
 import androidx.room3.Dao
 import androidx.room3.Query
 import androidx.room3.Transaction
+import androidx.room3.Update
 import androidx.room3.Upsert
 import java.security.MessageDigest
 
@@ -25,6 +26,10 @@ interface InboxLifecycleDao {
 
     @Upsert
     suspend fun upsertDocument(document: DocumentEntity)
+
+    /** Existing saved parent rows must be updated in place so FK children cannot be deleted/recreated. */
+    @Update
+    suspend fun updateDocument(document: DocumentEntity): Int
 
     @Upsert
     suspend fun upsertVersion(version: DocumentVersionEntity)
@@ -58,6 +63,10 @@ interface InboxLifecycleDao {
      * Returns the saved/existing Document id, or null if another committed action consumed Inbox.
      * All current origins are read after this transaction begins, so none can be lost by a stale
      * service-layer snapshot.
+     *
+     * [parserVersion] is retained in the API for source compatibility only. The durable version is
+     * the parserVersion stored with the Inbox row when extraction completed; Save must never relabel
+     * previously extracted text with the currently running application parser.
      */
     @Transaction
     suspend fun saveCurrent(
@@ -95,23 +104,25 @@ interface InboxLifecycleDao {
                     contentHash = inbox.contentHash,
                     normalizedText = inbox.normalizedText,
                     fetchedAtEpochMillis = currentOrigins.maxOf { it.fetchedAtEpochMillis },
-                    parserVersion = parserVersion,
+                    parserVersion = inbox.parserVersion,
                 ),
             )
         } else {
             documentId = existing.id
             if (existing.contentHash != inbox.contentHash) {
-                upsertDocument(
-                    existing.copy(
-                        canonicalUrl = inbox.canonicalUrl,
-                        title = inbox.title,
-                        publishedAtEpochMillis = inbox.publishedAtEpochMillis,
-                        normalizedText = inbox.normalizedText,
-                        contentHash = inbox.contentHash,
-                        updatedAtEpochMillis = atEpochMillis,
-                        disposition = "SAVED",
-                    ),
-                )
+                check(
+                    updateDocument(
+                        existing.copy(
+                            canonicalUrl = inbox.canonicalUrl,
+                            title = inbox.title,
+                            publishedAtEpochMillis = inbox.publishedAtEpochMillis,
+                            normalizedText = inbox.normalizedText,
+                            contentHash = inbox.contentHash,
+                            updatedAtEpochMillis = atEpochMillis,
+                            disposition = "SAVED",
+                        ),
+                    ) == 1,
+                ) { "Saved document $documentId changed during Inbox save" }
                 upsertVersion(
                     DocumentVersionEntity(
                         documentId = documentId,
@@ -119,7 +130,7 @@ interface InboxLifecycleDao {
                         contentHash = inbox.contentHash,
                         normalizedText = inbox.normalizedText,
                         fetchedAtEpochMillis = currentOrigins.maxOf { it.fetchedAtEpochMillis },
-                        parserVersion = parserVersion,
+                        parserVersion = inbox.parserVersion,
                     ),
                 )
             }

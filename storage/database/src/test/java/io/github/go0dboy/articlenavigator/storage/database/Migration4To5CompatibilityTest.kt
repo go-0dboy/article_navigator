@@ -4,13 +4,13 @@ import androidx.room3.Room
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
+import io.github.go0dboy.articlenavigator.core.model.ContentParserVersions
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -48,7 +48,7 @@ class Migration4To5CompatibilityTest {
 
             val db = Room.databaseBuilder<ArticleNavigatorDatabase>(file.toAbsolutePath().toString())
                 .setDriver(BundledSQLiteDriver())
-                .addMigrations(MIGRATION_4_5)
+                .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
                 .build()
             try {
                 // Accessing DAOs forces open + migration + Room's target-schema validation.
@@ -74,6 +74,7 @@ class Migration4To5CompatibilityTest {
 
                 val pending = inbox.findById(InboxItemId("inbox-1"))
                 assertNotNull(pending)
+                assertEquals(ContentParserVersions.DEFAULT_EXTRACTOR_V1, pending?.parserVersion)
                 val origin = inbox.origins(InboxItemId("inbox-1")).single()
                 assertEquals(SourceId("source-1"), origin.sourceId)
                 if (layout == V4Layout.EARLY) {
@@ -100,11 +101,15 @@ class Migration4To5CompatibilityTest {
             }
 
             BundledSQLiteDriver().open(file.toString()).use { connection ->
-                assertEquals(5L, scalarLong(connection, "PRAGMA user_version"))
+                assertEquals(6L, scalarLong(connection, "PRAGMA user_version"))
                 assertIndexExists(connection, "index_discovered_items_processingLeaseExpiresAtEpochMillis")
                 assertIndexExists(connection, "index_inbox_origins_discoveredItemId")
                 assertIndexExists(connection, "index_inbox_origins_sourceId")
                 assertForeignKeyDeleteAction(connection, "inbox_origins", "sources", "RESTRICT")
+                assertEquals(
+                    ContentParserVersions.DEFAULT_EXTRACTOR_V1,
+                    scalarText(connection, "SELECT parserVersion FROM inbox_items WHERE id='inbox-1'"),
+                )
                 assertEquals("blob", scalarText(connection, "SELECT typeof(payload) FROM raw_contents WHERE discoveredItemId='queue-item'"))
             }
         }

@@ -17,6 +17,12 @@ enum class ContentDisposition {
     SAVED,
 }
 
+/** Stable parser identifiers persisted with extracted content and immutable document versions. */
+object ContentParserVersions {
+    const val DEFAULT_EXTRACTOR_V1: String = "default-content-extractor-v1"
+    const val DEFAULT_EXTRACTOR_V2: String = "default-content-extractor-v2"
+}
+
 /**
  * A remote item as observed in a source.
  *
@@ -70,6 +76,8 @@ data class InboxItem(
     val contentHash: String,
     val createdAt: Instant,
     val updatedAt: Instant,
+    /** Parser that produced [normalizedText]; Save must preserve this value, not the current app version. */
+    val parserVersion: String = ContentParserVersions.DEFAULT_EXTRACTOR_V2,
 )
 
 /** Provenance snapshot captured when a discovery is attached to Inbox. */
