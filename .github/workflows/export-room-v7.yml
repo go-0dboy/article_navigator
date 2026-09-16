@@ -1,0 +1,46 @@
+name: Export Room v7 schema (temporary)
+
+on:
+  push:
+    branches:
+      - feat/structured-content-reader
+    paths:
+      - .github/workflows/export-room-v7.yml
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feat/structured-content-reader
+          fetch-depth: 1
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-37.0" "build-tools;36.0.0"
+      - name: Generate Room schema
+        run: ./gradlew :storage:database:kspDebugKotlin :storage:database:copyRoomSchemas --stacktrace
+      - name: Verify historical schemas unchanged
+        run: git diff --exit-code -- storage/database/schemas
+      - name: Commit generated v7 schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          schema='storage/database/schemas/io.github.go0dboy.articlenavigator.storage.database.ArticleNavigatorDatabase/7.json'
+          test -f "$schema"
+          git add "$schema"
+          if git diff --cached --quiet; then
+            echo 'v7 schema is already committed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: commit generated Room v7 schema'
+          git push origin HEAD:feat/structured-content-reader
