@@ -3,6 +3,7 @@ package io.github.go0dboy.articlenavigator.storage.database
 import androidx.room3.Dao
 import androidx.room3.Query
 import androidx.room3.Transaction
+import androidx.room3.Update
 import androidx.room3.Upsert
 import java.security.MessageDigest
 
@@ -25,6 +26,10 @@ interface InboxLifecycleDao {
 
     @Upsert
     suspend fun upsertDocument(document: DocumentEntity)
+
+    /** Existing saved parent rows must be updated in place so FK children cannot be deleted/recreated. */
+    @Update
+    suspend fun updateDocument(document: DocumentEntity): Int
 
     @Upsert
     suspend fun upsertVersion(version: DocumentVersionEntity)
@@ -105,17 +110,19 @@ interface InboxLifecycleDao {
         } else {
             documentId = existing.id
             if (existing.contentHash != inbox.contentHash) {
-                upsertDocument(
-                    existing.copy(
-                        canonicalUrl = inbox.canonicalUrl,
-                        title = inbox.title,
-                        publishedAtEpochMillis = inbox.publishedAtEpochMillis,
-                        normalizedText = inbox.normalizedText,
-                        contentHash = inbox.contentHash,
-                        updatedAtEpochMillis = atEpochMillis,
-                        disposition = "SAVED",
-                    ),
-                )
+                check(
+                    updateDocument(
+                        existing.copy(
+                            canonicalUrl = inbox.canonicalUrl,
+                            title = inbox.title,
+                            publishedAtEpochMillis = inbox.publishedAtEpochMillis,
+                            normalizedText = inbox.normalizedText,
+                            contentHash = inbox.contentHash,
+                            updatedAtEpochMillis = atEpochMillis,
+                            disposition = "SAVED",
+                        ),
+                    ) == 1,
+                ) { "Saved document $documentId changed during Inbox save" }
                 upsertVersion(
                     DocumentVersionEntity(
                         documentId = documentId,
