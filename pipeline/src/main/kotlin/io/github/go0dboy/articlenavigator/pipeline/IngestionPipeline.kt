@@ -1,19 +1,16 @@
 package io.github.go0dboy.articlenavigator.pipeline
 
+import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
 import io.github.go0dboy.articlenavigator.collector.api.UrlCanonicalizer
-import io.github.go0dboy.articlenavigator.core.data.InboxRepository
+import io.github.go0dboy.articlenavigator.core.data.ArticleProcessingLease
+import io.github.go0dboy.articlenavigator.core.data.IngestionFinalizeOutcome
 import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
-import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
-import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
-import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
-import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
 import io.github.go0dboy.articlenavigator.core.model.RawContent
-import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
 import io.github.go0dboy.articlenavigator.core.model.Source
 import java.security.MessageDigest
 import java.time.Clock
@@ -21,244 +18,295 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 fun interface SourceAdapterResolver {
     fun resolve(source: Source): SourceAdapter?
 }
 
 data class IngestionReport(
+    /** Number of processing leases acquired during this pass. */
     val processed: Int,
     val addedToInbox: Int,
     val mergedIntoInbox: Int,
     val alreadyKnown: Int,
     val failed: Int,
     val skipped: Int,
+    val stale: Int = 0,
+    val budgetExhausted: Boolean = false,
 )
 
 class IngestionPipeline(
     private val sourceRepository: SourceRepository,
     private val ingestionRepository: IngestionRepository,
-    private val inboxRepository: InboxRepository,
-    private val knowledgeRepository: KnowledgeRepository,
     private val adapterResolver: SourceAdapterResolver,
     private val extractor: ContentExtractor = DefaultContentExtractor(),
     private val clock: Clock = Clock.systemUTC(),
     private val retryBaseDelay: Duration = Duration.ofMinutes(15),
     private val retryMaxDelay: Duration = Duration.ofHours(24),
+    private val processingLeaseDuration: Duration = Duration.ofMinutes(10),
+    private val maxRunDuration: Duration = Duration.ofMinutes(8),
+    private val rawRetention: Duration = Duration.ofHours(24),
 ) {
-    suspend fun processReady(limit: Int = 20): IngestionReport {
+    suspend fun processReady(
+        limit: Int = 20,
+        isUnmeteredNetwork: Boolean = true,
+        deadline: Instant? = null,
+    ): IngestionReport {
         require(limit > 0)
-        val now = clock.instant()
-        val ready = ingestionRepository.findReadyForProcessing(now, limit)
+        val runStartedAt = clock.instant()
+        val localDeadline = runStartedAt.plus(maxRunDuration)
+        val effectiveDeadline = deadline?.takeIf { it < localDeadline } ?: localDeadline
+        var claimed = 0
         var added = 0
         var merged = 0
         var known = 0
         var failed = 0
         var skipped = 0
+        var stale = 0
+        var budgetExhausted = false
 
-        for (item in ready) {
-            when (processOne(item, now)) {
+        while (claimed < limit) {
+            val now = clock.instant()
+            if (!now.isBefore(effectiveDeadline)) {
+                budgetExhausted = true
+                break
+            }
+            val token = UUID.randomUUID().toString()
+            val lease = ingestionRepository.tryClaimNext(
+                runToken = token,
+                now = now,
+                leaseExpiresAt = now.plus(processingLeaseDuration),
+                isUnmeteredNetwork = isUnmeteredNetwork,
+            ) ?: break
+            claimed++
+
+            val outcome = try {
+                processOne(lease)
+            } catch (error: CancellationException) {
+                releaseBestEffort(lease)
+                throw error
+            } catch (error: Exception) {
+                // Source/article-local failures are converted to durable FAILED/SKIPPED outcomes
+                // inside processOne(). Anything escaping here is shared infrastructure failure.
+                // Release our still-owned lease so WorkManager's immediate retry is not blocked by
+                // this run's processing TTL. If storage is unavailable, releaseBestEffort falls
+                // back to the persisted lease expiry without hiding the original failure.
+                releaseBestEffort(lease)
+                throw error
+            }
+            when (outcome) {
                 Outcome.ADDED -> added++
                 Outcome.MERGED -> merged++
                 Outcome.KNOWN -> known++
                 Outcome.FAILED -> failed++
                 Outcome.SKIPPED -> skipped++
+                Outcome.STALE -> stale++
             }
         }
-        return IngestionReport(ready.size, added, merged, known, failed, skipped)
+
+        // Reaching the per-pass item cap is only exhaustion when more eligible persisted work
+        // actually exists. Probe with the same ownership protocol, then immediately release the
+        // probe lease so no queue item is consumed or stranded merely to detect continuation.
+        if (!budgetExhausted && claimed == limit) {
+            val probeAt = clock.instant()
+            if (!probeAt.isBefore(effectiveDeadline)) {
+                budgetExhausted = true
+            } else {
+                val probe = ingestionRepository.tryClaimNext(
+                    runToken = UUID.randomUUID().toString(),
+                    now = probeAt,
+                    leaseExpiresAt = probeAt.plus(processingLeaseDuration),
+                    isUnmeteredNetwork = isUnmeteredNetwork,
+                )
+                if (probe != null) {
+                    budgetExhausted = true
+                    releaseBestEffort(probe)
+                }
+            }
+        }
+
+        return IngestionReport(claimed, added, merged, known, failed, skipped, stale, budgetExhausted)
     }
 
-    private suspend fun processOne(item: DiscoveredItem, now: Instant): Outcome {
+    private suspend fun processOne(lease: ArticleProcessingLease): Outcome {
+        val item = lease.item
         val canonicalUrl = item.canonicalUrl
             ?: UrlCanonicalizer.canonicalize(item.url)
-            ?: return skip(item, null, "Invalid article URL: ${item.url}")
+            ?: return skip(lease, null, "Invalid article URL: ${item.url}")
         val canonicalHash = sha256(canonicalUrl)
 
-        val previousDisposition = knowledgeRepository.findSeen(canonicalHash, item.sourceId)
-        if (previousDisposition != null) {
-            check(ingestionRepository.markProcessed(item.id, canonicalUrl)) {
-                "Discovery disappeared while marking processed: ${item.id.value}"
-            }
-            ingestionRepository.deleteRawContent(item.id)
-            return Outcome.KNOWN
-        }
-
         val source = sourceRepository.findById(item.sourceId)
-            ?: return skip(item, canonicalUrl, "Source ${item.sourceId.value} no longer exists")
-        val adapter = adapterResolver.resolve(source)
-            ?: return fail(item, now, IllegalStateException("No adapter ${source.adapterType} for ${source.type}"))
+            ?: throw IllegalStateException("Claimed discovery references missing Source ${item.sourceId.value}")
 
-        return try {
-            val fetched = adapter.fetch(item)
+        val reusableRaw = ingestionRepository.loadRawContent(lease)
+            ?.takeIf { raw ->
+                raw.httpStatus in 200..299 &&
+                    raw.expiresAt?.let { it > clock.instant() } != false
+            }
+
+        val response = if (reusableRaw != null) {
+            DurableResponse(
+                body = reusableRaw.payload,
+                contentType = reusableRaw.contentType,
+                resolvedUrl = reusableRaw.resolvedUrl,
+                fetchedAt = reusableRaw.fetchedAt,
+            )
+        } else {
+            val adapter = adapterResolver.resolve(source)
+                ?: throw IllegalStateException("No adapter ${source.adapterType} for ${source.type}")
+            val fetched = try {
+                adapter.fetch(item)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                return fail(lease, clock.instant(), error)
+            }
+            val responseAt = clock.instant()
             if (fetched.statusCode !in 200..299) {
-                val error = IllegalStateException("Article request returned HTTP ${fetched.statusCode}")
+                val error = ArticleHttpException(fetched.statusCode)
                 return if (isRetryableHttpStatus(fetched.statusCode)) {
                     fail(
-                        item = item,
-                        now = now,
+                        lease = lease,
+                        failureAt = responseAt,
                         error = error,
-                        minimumDelay = parseRetryAfter(fetched.retryAfterHeader(), now),
+                        minimumDelay = parseRetryAfter(fetched.retryAfterHeader(), responseAt),
                     )
                 } else {
-                    skip(item, canonicalUrl, error.message ?: "HTTP ${fetched.statusCode}")
+                    skip(lease, canonicalUrl, error.message ?: "HTTP ${fetched.statusCode}")
                 }
             }
 
-            val fetchedAt = clock.instant()
-            ingestionRepository.storeRawContent(
-                RawContent(
-                    discoveredItemId = item.id,
-                    mimeType = fetched.contentType,
-                    payload = fetched.body.toString(Charsets.UTF_8),
-                    fetchedAt = fetchedAt,
-                    httpStatus = fetched.statusCode,
-                    expiresAt = fetchedAt.plus(Duration.ofHours(24)),
-                ),
+            val raw = RawContent(
+                discoveredItemId = item.id,
+                contentType = fetched.contentType,
+                payload = fetched.body,
+                resolvedUrl = fetched.resolvedUrl,
+                fetchedAt = responseAt,
+                httpStatus = fetched.statusCode,
+                expiresAt = responseAt.plus(rawRetention),
             )
+            if (!ingestionRepository.storeRawContent(lease, raw, responseAt)) return Outcome.STALE
+            DurableResponse(
+                body = raw.payload,
+                contentType = raw.contentType,
+                resolvedUrl = raw.resolvedUrl,
+                fetchedAt = raw.fetchedAt,
+            )
+        }
 
-            val extractionBaseUrl = fetched.resolvedUrl ?: canonicalUrl
-            val extracted = try {
-                extractor.extract(fetched.body, fetched.contentType, extractionBaseUrl)
-            } catch (error: UnsupportedContentTypeException) {
-                return skip(item, canonicalUrl, error.message ?: "Unsupported content type")
-            } catch (error: IllegalArgumentException) {
-                return skip(item, canonicalUrl, error.message ?: "Content cannot be extracted")
-            }
+        val extractionBaseUrl = response.resolvedUrl ?: canonicalUrl
+        val extracted = try {
+            extractor.extract(response.body, response.contentType, extractionBaseUrl)
+        } catch (error: UnsupportedContentTypeException) {
+            return skip(lease, canonicalUrl, error.message ?: "Unsupported content type")
+        } catch (error: IllegalArgumentException) {
+            return skip(lease, canonicalUrl, error.message ?: "Content cannot be extracted")
+        }
 
-            val contentHash = sha256(extracted.normalizedText)
-            check(
-                ingestionRepository.markFetched(
-                    id = item.id,
-                    canonicalUrl = canonicalUrl,
-                    resolvedUrl = fetched.resolvedUrl ?: item.resolvedUrl,
-                    contentHash = contentHash,
-                ),
-            ) { "Discovery disappeared while marking fetched: ${item.id.value}" }
+        val contentHash = sha256(extracted.normalizedText)
+        val fetchedMarkedAt = clock.instant()
+        if (
+            !ingestionRepository.markFetched(
+                lease = lease,
+                canonicalUrl = canonicalUrl,
+                resolvedUrl = response.resolvedUrl ?: item.resolvedUrl,
+                contentHash = contentHash,
+                at = fetchedMarkedAt,
+            )
+        ) return Outcome.STALE
 
-            val title = extracted.title?.takeIf { it.isNotBlank() }
-                ?: item.title?.takeIf { it.isNotBlank() }
-                ?: canonicalUrl
-
-            // Explicit policy: merge only on exact canonical URL or exact normalized-text SHA-256.
-            val existingDocument = knowledgeRepository.findByCanonicalUrl(canonicalUrl)
-                ?: knowledgeRepository.findByContentHash(contentHash)
-            if (existingDocument != null) {
-                knowledgeRepository.recordDiscovery(
-                    documentId = existingDocument.id,
-                    provenance = DocumentProvenance(
-                        documentId = existingDocument.id,
-                        sourceId = item.sourceId,
-                        discoveredUrl = item.url,
-                        resolvedUrl = fetched.resolvedUrl,
-                        discoveredAt = item.discoveredAt,
-                        fetchedAt = fetchedAt,
-                        sourceNameSnapshot = source.name,
-                        sourceUrlSnapshot = source.url,
-                        sourceTypeSnapshot = source.type.name,
-                    ),
-                    fingerprint = SeenFingerprint(
-                        canonicalUrlHash = canonicalHash,
-                        contentHash = contentHash,
-                        sourceId = item.sourceId,
-                        seenAt = now,
-                        disposition = ContentDisposition.SAVED,
-                    ),
-                    discoveredItemId = item.id,
-                )
-                return Outcome.KNOWN
-            }
-
-            val existingInbox = inboxRepository.findByCanonicalUrl(canonicalUrl)
-                ?: inboxRepository.findByContentHash(contentHash)
-            if (existingInbox != null) {
-                inboxRepository.attachOrigin(
-                    existingInbox.id,
-                    InboxOrigin(
-                        inboxItemId = existingInbox.id,
-                        discoveredItemId = item.id,
-                        sourceId = item.sourceId,
-                        discoveredUrl = item.url,
-                        resolvedUrl = fetched.resolvedUrl,
-                        canonicalUrl = canonicalUrl,
-                        discoveredAt = item.discoveredAt,
-                        fetchedAt = fetchedAt,
-                        sourceNameSnapshot = source.name,
-                        sourceUrlSnapshot = source.url,
-                        sourceTypeSnapshot = source.type.name,
-                    ),
-                )
-                return Outcome.MERGED
-            }
-
-            val inboxId = InboxItemId("inbox-${sha256(canonicalUrl)}")
-            inboxRepository.put(
-                InboxItem(
+        val title = extracted.title?.takeIf { it.isNotBlank() }
+            ?: item.title?.takeIf { it.isNotBlank() }
+            ?: canonicalUrl
+        val finalisedAt = clock.instant()
+        val inboxId = InboxItemId("inbox-${sha256(canonicalUrl)}")
+        return when (
+            ingestionRepository.finalizeSuccess(
+                lease = lease,
+                item = InboxItem(
                     id = inboxId,
                     canonicalUrl = canonicalUrl,
                     title = title,
                     publishedAt = item.publishedAt,
                     normalizedText = extracted.normalizedText,
                     contentHash = contentHash,
-                    createdAt = now,
-                    updatedAt = now,
+                    createdAt = finalisedAt,
+                    updatedAt = finalisedAt,
                 ),
-                InboxOrigin(
+                origin = InboxOrigin(
                     inboxItemId = inboxId,
                     discoveredItemId = item.id,
                     sourceId = item.sourceId,
                     discoveredUrl = item.url,
-                    resolvedUrl = fetched.resolvedUrl,
+                    resolvedUrl = response.resolvedUrl ?: item.resolvedUrl,
                     canonicalUrl = canonicalUrl,
                     discoveredAt = item.discoveredAt,
-                    fetchedAt = fetchedAt,
+                    fetchedAt = response.fetchedAt,
                     sourceNameSnapshot = source.name,
                     sourceUrlSnapshot = source.url,
                     sourceTypeSnapshot = source.type.name,
                 ),
+                canonicalUrlHash = canonicalHash,
+                completedAt = finalisedAt,
             )
-            Outcome.ADDED
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            fail(item, now, error)
+        ) {
+            IngestionFinalizeOutcome.ADDED_TO_INBOX -> Outcome.ADDED
+            IngestionFinalizeOutcome.MERGED_INTO_INBOX -> Outcome.MERGED
+            IngestionFinalizeOutcome.ALREADY_KNOWN -> Outcome.KNOWN
+            IngestionFinalizeOutcome.STALE -> Outcome.STALE
         }
     }
 
     private suspend fun fail(
-        item: DiscoveredItem,
-        now: Instant,
+        lease: ArticleProcessingLease,
+        failureAt: Instant,
         error: Exception,
         minimumDelay: Duration? = null,
     ): Outcome {
-        val attempts = item.processingAttempts + 1
+        val attempts = lease.item.processingAttempts + 1
         val multiplier = 1L shl min(attempts - 1, 10)
         val localDelay = retryBaseDelay.multipliedBy(multiplier).coerceAtMost(retryMaxDelay)
         val delay = minimumDelay?.takeIf { it > localDelay } ?: localDelay
-        check(
-            ingestionRepository.markFailed(
-                id = item.id,
-                processingAttempts = attempts,
-                nextProcessingAt = now.plus(delay),
-                lastProcessingError = errorDescription(error),
-            ),
-        ) { "Discovery disappeared while marking failed: ${item.id.value}" }
-        return Outcome.FAILED
+        val applied = ingestionRepository.markFailed(
+            lease = lease,
+            processingAttempts = attempts,
+            nextProcessingAt = failureAt.plus(delay),
+            lastProcessingError = errorDescription(error),
+            at = failureAt,
+        )
+        return if (applied) Outcome.FAILED else Outcome.STALE
     }
 
-    private suspend fun skip(item: DiscoveredItem, canonicalUrl: String?, reason: String): Outcome {
-        check(ingestionRepository.markSkipped(item.id, canonicalUrl, reason.take(500))) {
-            "Discovery disappeared while marking skipped: ${item.id.value}"
+    private suspend fun skip(
+        lease: ArticleProcessingLease,
+        canonicalUrl: String?,
+        reason: String,
+    ): Outcome {
+        val at = clock.instant()
+        val applied = ingestionRepository.markSkipped(
+            lease = lease,
+            canonicalUrl = canonicalUrl,
+            lastProcessingError = reason.take(500),
+            at = at,
+        )
+        return if (applied) Outcome.SKIPPED else Outcome.STALE
+    }
+
+    private suspend fun releaseBestEffort(lease: ArticleProcessingLease) {
+        withContext(NonCancellable) {
+            runCatching { ingestionRepository.releaseProcessing(lease) }
         }
-        ingestionRepository.deleteRawContent(item.id)
-        return Outcome.SKIPPED
     }
 
     private fun isRetryableHttpStatus(statusCode: Int): Boolean =
         statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
 
-    private fun io.github.go0dboy.articlenavigator.collector.api.FetchResult.retryAfterHeader(): String? =
+    private fun FetchResult.retryAfterHeader(): String? =
         fetchedHeaders.entries.firstOrNull { (name, _) -> name.equals("Retry-After", ignoreCase = true) }?.value
 
     private fun parseRetryAfter(value: String?, now: Instant): Duration? {
@@ -281,5 +329,15 @@ class IngestionPipeline(
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
 
-    private enum class Outcome { ADDED, MERGED, KNOWN, FAILED, SKIPPED }
+    private data class DurableResponse(
+        val body: ByteArray,
+        val contentType: String?,
+        val resolvedUrl: String?,
+        val fetchedAt: Instant,
+    )
+
+    private class ArticleHttpException(statusCode: Int) :
+        IllegalStateException("Article request returned HTTP $statusCode")
+
+    private enum class Outcome { ADDED, MERGED, KNOWN, FAILED, SKIPPED, STALE }
 }

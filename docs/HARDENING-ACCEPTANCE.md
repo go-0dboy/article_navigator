@@ -1,177 +1,232 @@
 # Hardening acceptance criteria
 
-Scope: PR #15, branch `fix/phase4-hardening`.
+PR #15 established the Phase 4 collection/network/data-integrity baseline and is merged into `main`. The current release gate is PR #16, branch `fix/reliability-stage2`, covering the existing discovery → article fetch → processing → Inbox → save/reject chain through Room database version 5.
 
-This document is the release gate for the Phase 4 hardening pass. It intentionally excludes semantic search, embeddings, LLM features, recommendations, and other new product functionality.
+Semantic search, embeddings, LLM features, recommendations, and unrelated product functionality are explicitly outside this reliability gate.
 
-## 1. Persisted collection lease
+## 1. Persisted Source collection lease
 
 Acceptance criteria:
-- two concurrent runs cannot own the same Source lease;
-- the loser reports `ALREADY_CLAIMED` and does not perform the network request;
+- two concurrent collection runs cannot own the same Source lease;
+- the loser reports `ALREADY_CLAIMED` and does not issue the network request;
 - an abandoned expired lease is reclaimable;
 - a stale owner cannot release a replacement owner's lease;
-- the atomic claim re-checks the due schedule so a stale in-memory due snapshot cannot re-collect a Source already scheduled into the future;
+- claim atomically re-checks the due schedule;
 - expired/replaced/settings-stale owners cannot commit.
 
-Automated evidence:
-- `CollectionHardeningIntegrationTest.concurrentCollectionRunsClaimOnceReportAlreadyClaimedAndFetchOnce`
-- `CollectionHardeningIntegrationTest.expiredLeaseCanBeClaimedByNextRunWithoutRelease`
-- `CollectionLeaseReleaseIntegrationTest.staleOwnerReleaseCannotClearReplacementLease`
-- `CollectionHardeningIntegrationTest.staleRunCannotOverwriteNewerCommittedState`
-- `CollectionHardeningIntegrationTest.expiredLeaseCannotCommitEvenIfNoReplacementClaimedIt`
-- `CollectionLeaseDueGuardIntegrationTest.staleDueSnapshotCannotClaimAfterNewerRunSchedulesSourceInFuture`
+Evidence includes `CollectionHardeningIntegrationTest`, `CollectionLeaseDueGuardIntegrationTest`, and `CollectionLeaseReleaseIntegrationTest`.
 
-## 2. Atomic successful collection commit
+## 2. Atomic Source collection commit
 
 Acceptance criteria:
-- discovery sightings, cursor, collection diagnostics, next schedule, successful-check timestamp, and lease release are committed as one Room/SQLite transaction;
-- an exception during the transaction rolls back every write;
-- no state such as “items persisted but cursor not persisted” is observable.
+- discovery sightings, cursor, diagnostics, next schedule, successful-check timestamp and lease release commit in one Room/SQLite transaction;
+- an exception rolls back every write;
+- stale owners cannot partially publish a collection result.
 
-Automated evidence:
-- `CollectionHardeningIntegrationTest.commitSuccessRollsBackAllRowsWhenMiddleWriteFails`
-- `CollectionHardeningIntegrationTest.staleRunCannotOverwriteNewerCommittedState`
+Evidence includes `CollectionHardeningIntegrationTest.commitSuccessRollsBackAllRowsWhenMiddleWriteFails` and stale-owner commit tests.
 
 ## 3. Source configuration isolation
 
 Acceptance criteria:
-- scheduler code does not use stale full-row Source upserts for operational state;
-- URL, name, enabled, poll policy, adapter type/configuration remain user-owned;
-- schedule, lease, collection diagnostics, and successful-check metadata use targeted operational writes;
-- changing Source configuration invalidates an in-flight collection result rather than being overwritten by it.
+- scheduler/runtime code does not overwrite user-owned Source settings from stale snapshots;
+- URL, name, enabled state, poll policy, adapter type and configuration remain user-owned;
+- operational scheduling/lease state uses targeted writes;
+- changing Source configuration invalidates an in-flight collector result.
 
-Automated evidence:
-- `CollectionHardeningIntegrationTest.userSourceEditsInvalidateInFlightCollectorWithoutBeingReverted`
+Evidence: `CollectionHardeningIntegrationTest.userSourceEditsInvalidateInFlightCollectorWithoutBeingReverted`.
 
-## 4. DiscoveredItem race and interruption safety
+## 4. Discovery sighting integrity
 
 Acceptance criteria:
-- repeat sightings do not overwrite ingestion-owned processing status, content hash, attempts, retry schedule, or processing error;
+- repeat sightings do not overwrite ingestion status, hash, attempts, retry schedule or processing error;
 - first discovery time is immutable;
-- last seen time advances on repeat discovery;
-- concurrency-sensitive scheduler writes are targeted SQL operations rather than read/merge/full-upsert;
-- if the process is interrupted after article fetch has persisted `FETCHED` but before the terminal Inbox/Knowledge transaction, that item becomes eligible for processing again after restart;
-- terminal `PROCESSED` and `SKIPPED` rows are not returned to the ready queue.
+- last-seen advances on repeat discovery;
+- runtime scheduler writes are targeted rather than full-row merge/upsert.
 
-Automated evidence:
-- `CollectionHardeningIntegrationTest.repeatedSightingPreservesNewerIngestionStateAndFirstDiscoveryTime`
-- `IngestionCrashRecoveryIntegrationTest.fetchedStateIsRecoverableAfterInterruptedIngestion`
+Evidence: `CollectionHardeningIntegrationTest.repeatedSightingPreservesNewerIngestionStateAndFirstDiscoveryTime`.
 
-## 5. HTTP cancellation
+## 5. Persisted article-processing ownership
 
 Acceptance criteria:
-- cancelling the coroutine cancels the underlying OkHttp Call;
-- cancellation propagates as `CancellationException`;
-- a slow response body is not fully consumed after cancellation;
-- collection cancellation is not recorded as an ordinary Source failure and the owned lease is released best-effort;
-- the cancellation regression test itself is bounded and cannot deadlock before the HTTP call starts.
+- runtime ingestion must acquire a persisted expiring article lease before processing;
+- ownership is identified by item + token + unexpired expiry;
+- an expired or replaced owner cannot persist raw bytes, mark `FETCHED`, mark retry/failure, skip, finalize success, or release a replacement lease;
+- two workers cannot fetch the same discovery concurrently under valid ownership;
+- abandoned ownership becomes reclaimable after persisted expiry;
+- cancellation and escaping shared-infrastructure exceptions release owned processing best-effort in `NonCancellable` context without hiding the original cancellation/failure.
 
 Automated evidence:
-- `OkHttpTransportTest.cancellingCoroutineCancelsOkHttpCallAndStopsBodyRead`
-- `CollectionRetrySemanticsTest.cancellationReleasesLeaseAndIsNotRecordedAsSourceFailure`
+- `ProcessingLeaseStaleFinalizeTest`
+- `ReliabilityStage2RegressionTest.twoHandlersCannotFetchTheSameDiscovery`
+- `ReliabilityStage2RegressionTest.expiredOwnerCannotPersistRawFailureSuccessOrReleaseReplacementLease`
+- `ReliabilityStage2RegressionTest.infrastructureFailureAfterClaimReleasesLeaseForImmediateRetry`
+- `IngestionCrashRecoveryIntegrationTest.claimedWorkBecomesAvailableOnlyAfterPersistedLeaseExpiresAcrossReopen`
 
-## 6. Network resource limits
+## 6. Crash-resumable raw article response
 
 Acceptance criteria:
-- advertised Content-Length above the configured limit fails with `ResponseTooLargeException`;
-- chunked/unknown-length bodies are bounded while streaming;
-- exact-limit and below-limit responses succeed;
-- feed and article limits are distinct and bounded;
-- OkHttp has bounded global/per-host concurrency and a call timeout.
+- successful article HTTP bytes are durably stored before extraction/finalization;
+- v5 raw content stores BLOB payload, content type, resolved URL, fetch timestamp, status and optional expiry;
+- valid persisted raw is reused after DB/process reopen without another HTTP request;
+- a persisted `FETCHED` intermediate state is recoverable after reopen;
+- failed terminal finalization rolls back and leaves recoverable raw/intermediate state;
+- expired raw is not reused and a successful refetch deterministically replaces the old row under current ownership;
+- terminal processed/skipped work removes temporary raw data.
 
 Automated evidence:
-- `OkHttpTransportTest.contentLengthAboveLimitFailsBeforeBufferingBody`
-- `OkHttpTransportTest.chunkedBodyWithoutContentLengthIsLimitedWhileStreaming`
-- `OkHttpTransportTest.responseExactlyAtLimitSucceeds`
-- `OkHttpTransportTest.responseBelowLimitSucceeds`
-- `ResponseLimitPolicyTest.feedAndArticleUseDistinctBoundedResponseLimits`
+- `IngestionCrashRecoveryIntegrationTest.durableRawBytesResumeAfterReopenWithoutSecondHttpRequest`
+- `IngestionCrashRecoveryIntegrationTest.fetchedIntermediateStateResumesAfterReopenWithoutHttp`
+- `IngestionCrashRecoveryIntegrationTest.failedFinalizationRollsBackCompletelyAndWorkRecoversAfterReopen`
+- `IngestionCrashRecoveryIntegrationTest.expiredRawIsNotReusedAndSuccessfulRefetchReplacesIt`
 
-Current policy:
-- feed: 2 MiB;
-- article: 5 MiB.
-
-## 7. HTTP retry/backoff semantics
+## 7. Atomic article finalization and deduplication
 
 Acceptance criteria:
-- 429 and transient 5xx responses use retry policy;
-- 401/403/404 are permanent for automatic acquisition and do not enter aggressive exponential retry;
-- transport timeouts are transient;
-- `Retry-After` supports delta-seconds and RFC-1123 HTTP-date;
-- invalid or past `Retry-After` falls back to local policy;
-- server delay is treated as a minimum and wins only when greater than local backoff.
+- runtime success re-checks article ownership inside the final transaction;
+- saved-document match, dismissed-fingerprint match, pending-Inbox merge, or new-Inbox creation is decided transactionally;
+- origin/provenance/fingerprint writes, discovery `PROCESSED`, lease clearing and raw cleanup share the terminal boundary;
+- a stale owner returns `STALE` instead of publishing partial state;
+- the same material discovered by multiple Sources converges without losing either origin.
 
 Automated evidence:
-- `RssAtomSourceAdapterTest.retryAfterSecondsIsExposedFor429And503`
-- `RssAtomSourceAdapterTest.retryAfterHttpDateIsParsed`
-- `RssAtomSourceAdapterTest.pastOrInvalidRetryAfterIsIgnored`
-- `RssAtomSourceAdapterTest.permanentHttpErrorsAreNotRetryableButServerErrorsAre`
-- `CollectionRetrySemanticsTest.serverRetryAfterWinsWhenLongerThanLocalBackoff`
-- `CollectionRetrySemanticsTest.permanentHttpClassificationUsesNormalPollIntervalNotAggressiveRetry`
-- `CollectionRetrySemanticsTest.transportTimeoutUsesTransientLocalBackoff`
-- `IngestionHttpRetrySemanticsTest.retryAfterSecondsOverridesLocalBackoffOnlyWhenLonger`
-- `IngestionHttpRetrySemanticsTest.shortRetryAfterDoesNotReduceLocalBackoff`
-- `IngestionHttpRetrySemanticsTest.retryAfterHttpDateOverridesLocalBackoff`
-- `IngestionHttpRetrySemanticsTest.pastOrInvalidRetryAfterFallsBackToLocalBackoff`
-- `IngestionHttpRetrySemanticsTest.permanentClientErrorsAreSkippedWithoutRetry`
-- `IngestionHttpRetrySemanticsTest.http500UsesTransientLocalBackoff`
-- `IngestionHttpRetrySemanticsTest.transportTimeoutUsesTransientLocalBackoff`
+- `ProcessingLeaseStaleFinalizeTest`
+- `ReliabilityStage2RegressionTest.sameMaterialFromTwoSourcesProducesOneInboxWithBothOrigins`
+- rollback/reopen tests in `IngestionCrashRecoveryIntegrationTest`
 
-## 8. Feed validators
+## 8. Atomic Inbox Save / Reject / Read-and-Discard
 
 Acceptance criteria:
-- 304 without ETag/Last-Modified preserves stored validators;
-- 200 without those headers clears the corresponding old validators.
+- Save reads the current Inbox row and all current origins inside one transaction;
+- Save resolves or creates the Document/version, copies all immutable provenance, writes seen fingerprints, finishes discoveries, removes raw content and consumes Inbox atomically;
+- Reject and Read-and-Discard persist all current dismissal fingerprints and consume Inbox atomically;
+- Save-vs-Reject has exactly one committed winner;
+- repeat Save after Inbox consumption cannot succeed;
+- a late origin after committed Save attaches to the saved Document instead of being lost;
+- a late origin after committed dismissal inherits the dismissal instead of recreating Inbox.
 
 Automated evidence:
-- `RssAtomSourceAdapterTest.notModifiedWithoutValidatorsPreservesPreviousValidators`
-- `RssAtomSourceAdapterTest.successfulResponseWithoutValidatorsClearsPreviousValidators`
+- `ReliabilityStage2RegressionTest.saveCommittedBeforeLateOriginRoutesThatOriginIntoSavedDocument`
+- `ReliabilityStage2RegressionTest.rejectCommittedWhileOldProcessingRunsCannotRecreateInbox`
+- `ReliabilityStage2RegressionTest.saveAndRejectRaceHasExactlyOneCommittedWinnerAndRepeatSaveFails`
+- `InboxLifecyclePersistenceTest`
+- `InboxServiceTest`
 
 ## 9. Provenance durability
 
 Acceptance criteria:
-- every saved Document retains discovery provenance;
-- Source name/URL/type are snapshotted when a discovery is attached to Inbox, not when the user later presses Save;
-- Save copies the Inbox snapshot and does not re-read mutable Source metadata;
-- Source edits after Inbox attachment do not rewrite historical provenance;
-- Source archive/disable does not change pending or saved provenance;
-- physical Source deletion is rejected while pending Inbox provenance, saved Document provenance, or retained seen-history references exist;
-- migration 3→4 backfills Inbox and Document provenance snapshots without silent loss.
+- every pending/saved origin retains immutable Source name/URL/type snapshots captured at ingestion time;
+- Save does not re-read mutable Source metadata;
+- Source edits/archive do not rewrite historical provenance;
+- hard Source deletion is rejected while pending Inbox provenance, saved Document provenance, or retained seen-history references exist;
+- migration backfills legacy provenance snapshots without silent loss;
+- stage-2 late-origin routing preserves the same provenance guarantees.
 
 Automated evidence:
-- `InboxServiceTest.save preserves every ingestion-time origin snapshot and creates saved fingerprints`
 - `InboxProvenancePersistenceTest.sourceEditsAfterInboxAttachmentDoNotRewriteOriginSnapshot`
-- `InboxOriginMigrationTest.migration3To4BackfillsInboxSourceSnapshotAndRestrictsSourceDelete`
 - `CollectionHardeningIntegrationTest.archivedSourceDoesNotChangeSavedProvenanceSnapshot`
-- `MigrationHardeningTest.migration3To4PreservesOperationalInboxKnowledgeAndProvenanceData`
-- `MigrationHardeningTest.migration1To2To3To4PreservesDataAcrossFullSupportedChain`
+- `MigrationFullChainV5Test`
+- `Migration4To5CompatibilityTest`
 
-## 10. Database migrations
+## 10. HTTP cancellation and resource limits
 
 Acceptance criteria:
-- 3→4 succeeds with data preserved;
-- 1→2→3→4 succeeds with data preserved;
-- seeded coverage includes Sources, cursors, collection state, discovered items, Inbox, Documents, versions, provenance and seen history;
-- v3 pending Inbox origins gain source snapshots during migration;
-- critical indexes and foreign-key delete policies are verified;
-- the committed Room v4 schema is the generated schema and matches migration/entity semantics.
+- coroutine cancellation cancels the underlying OkHttp Call and propagates as cancellation;
+- slow bodies are not fully consumed after cancellation;
+- Content-Length above the configured bound fails before buffering;
+- chunked/unknown-length responses are bounded while streaming;
+- exact-limit/below-limit responses succeed;
+- feed and article limits remain distinct and bounded;
+- global/per-host concurrency and call timeout are bounded.
+
+Current limits:
+- feed: 2 MiB;
+- article: 5 MiB.
+
+Evidence: `OkHttpTransportTest` and `ResponseLimitPolicyTest`.
+
+## 11. HTTP retry/backoff and feed validators
+
+Acceptance criteria:
+- 429 and transient 5xx use retry policy;
+- 401/403/404 are permanent for automatic acquisition;
+- transport timeout is transient;
+- `Retry-After` supports delta-seconds and RFC-1123 date;
+- invalid/past values fall back to local policy;
+- server delay is a minimum and never shortens local backoff;
+- 304 without validators preserves stored validators;
+- 200 without validators clears stale validators;
+- article retry mutations remain guarded by current processing ownership.
+
+Evidence: `RssAtomSourceAdapterTest`, `CollectionRetrySemanticsTest`, and `IngestionHttpRetrySemanticsTest`.
+
+## 12. Bounded collection/ingestion passes
+
+Acceptance criteria:
+- one WorkManager pass has a shared absolute time budget;
+- discovery has a bounded per-pass Source count;
+- ingestion has a bounded per-pass article count;
+- reaching an item cap sets `budgetExhausted` only if eligible persisted work still remains;
+- an ingestion continuation probe uses the same persisted ownership protocol and immediately releases the probe lease;
+- no work is consumed merely to detect backlog;
+- deadline exhaustion reports durable continuation rather than entering an in-process busy loop.
+
+Evidence: scheduler-core budget tests in `CollectionOrchestratorTest` and ingestion budget tests in `IngestionPipelineTest`.
+
+## 13. WorkManager integration
+
+Acceptance criteria:
+- periodic collection is unique and requires `CONNECTED` network plus battery-not-low;
+- immediate collection is unique and requires `CONNECTED` network;
+- immediate replacement/cancellation semantics are verified against WorkManager test infrastructure;
+- shared database/storage exceptions are not downgraded to Source/article failures and request bounded infrastructure retry;
+- a pass that exhausts its work budget requests persisted WorkManager continuation;
+- combined collection + ingestion diagnostics are exposed as worker progress/result data.
 
 Automated evidence:
-- `MigrationHardeningTest.migration3To4PreservesOperationalInboxKnowledgeAndProvenanceData`
-- `MigrationHardeningTest.migration1To2To3To4PreservesDataAcrossFullSupportedChain`
-- `InboxOriginMigrationTest.migration3To4BackfillsInboxSourceSnapshotAndRestrictsSourceDelete`
+- `CollectionWorkSchedulerTest.periodicWorkRequiresNetworkAndHealthyBattery`
+- `CollectionWorkSchedulerTest.immediateWorkRequiresNetworkButDoesNotRequireHealthyBattery`
+- `CollectionWorkSchedulerTest.ensurePeriodicRegistersOneUniquePeriodicWork`
+- `CollectionWorkSchedulerTest.runNowReplacesPreviousImmediateWork`
+- `CollectionWorkSchedulerTest.cancelImmediateCancelsCurrentUniqueWork`
+- `CollectionWorkSchedulerTest.sharedInfrastructureFailureRequestsWorkManagerRetry`
+- `CollectionWorkSchedulerTest.exhaustedSharedPassBudgetRequestsPersistedRetry`
+
+Known non-integrity refinement: repeated budget continuations currently use WorkManager `Result.retry()` and therefore share exponential-backoff timing. This preserves work and avoids busy looping, but a later scheduler refinement can improve very-large-backlog drain latency with a dedicated continuation-work policy.
+
+## 14. Database version 5 and migration compatibility
+
+Acceptance criteria:
+- production opens Room with migrations 1→2, 2→3, 3→4 and 4→5 registered;
+- `MIGRATION_4_5` accepts both physical v4 layouts known to have existed in repository history;
+- legacy raw TEXT is converted to v5 BLOB without changing the stored UTF-8 bytes;
+- v4 Inbox origin snapshots are preserved when present and backfilled from Source when absent;
+- article lease fields/index are created;
+- critical provenance/seen Source foreign keys remain `ON DELETE RESTRICT`;
+- the committed v5 Room schema is generated, reproducible and matches entities/migrations;
+- a real exported v1 schema migrates through 1→2→3→4→5 with seeded domain data preserved;
+- the migrated file opens successfully through the current generated Room v5 implementation.
+
+Automated evidence:
+- `MigrationFullChainV5Test.exportedVersion1MigratesThroughEverySupportedStepToCurrentRoom`
+- `Migration4To5CompatibilityTest`
+- existing `MigrationHardeningTest` coverage for historical steps
 - CI Room-schema consistency gate.
 
-## 11. Reproducible clean checkout
+Generated v5 Room identity hash: `e567d35de736b7412b95dfcbb18f6d87`.
+
+## 15. Reproducible clean checkout and APK gates
 
 Acceptance criteria:
 - no system Gradle dependency;
 - committed Wrapper JAR is checksum-verified;
 - Gradle distribution SHA-256 is pinned;
-- all build gates use `./gradlew`;
-- Room generated schema remains committed and reproducible.
+- build gates use `./gradlew` on JDK 17;
+- Room generated schemas stay committed and reproducible;
+- Android lint passes;
+- debug APK assembles;
+- CI verifies APK application identity/signature and uploads the artifact.
 
-Required commands/gates:
+Required CI commands/gates include:
 
 ```bash
 ./gradlew --version
@@ -180,28 +235,40 @@ Required commands/gates:
 ./gradlew assembleDebug --stacktrace
 ```
 
-CI additionally verifies the debug APK signature and application id.
-
 ## Failure-domain policy
 
-Source-local remote/adapter failures are persisted per Source. `CancellationException` is never downgraded to a normal Source failure. A persisted `FETCHED` row is treated as recoverable interrupted work until a terminal transaction marks it `PROCESSED` or `SKIPPED`. Shared database/storage failures remain run-level infrastructure failures and are passed to the Android Worker for bounded WorkManager retry; they are not falsely recorded as remote Source failures.
+Source-local remote/adapter failures are persisted per Source. Article-local HTTP/extraction outcomes are persisted under article-processing ownership. `CancellationException` is never downgraded to a normal failure. Shared database/storage failures remain run-level infrastructure failures and propagate to the Android Worker for WorkManager retry.
 
-This is why audit D6 remains **PARTIALLY FIXED** rather than hiding infrastructure failures behind source-local diagnostics.
+If an escaping infrastructure exception occurs after an article lease was acquired, the pipeline attempts ownership-safe release in `NonCancellable` context so the retry is not blocked by its own lease. If storage cannot perform that release, persisted lease expiry is the recovery fallback. This is an explicit failure-domain design, not silent failure conversion.
 
-## Final Definition of Done
+## Current acceptance evidence
 
-PR #15 may leave Draft only when all of the following are true:
-- unit tests are green;
-- Room integration tests are green;
-- migration tests are green;
-- concurrency/lease tests are green;
-- cancellation/network-limit/retry tests are green;
-- interruption-recovery and provenance-snapshot tests are green;
+Implementation head `db2c8a3f507861de20b65410705ff726613598bb` passed Android CI run #272 end-to-end on 2026-09-16. That run passed:
+- wrapper validation and clean-checkout toolchain;
+- complete unit, Room, migration, concurrency, crash-recovery and WorkManager tests;
+- Room schema consistency;
+- Android lint;
+- `assembleDebug`;
+- APK identity/signature verification;
+- schema and APK artifact upload.
+
+## Final Definition of Done for PR #16
+
+PR #16 may leave Draft only when all of the following are true:
+- persisted Source and article ownership tests are green;
+- Room integration and atomic lifecycle tests are green;
+- crash/reopen recovery tests are green;
+- full migration 1→2→3→4→5 and both-v4 compatibility tests are green;
+- network cancellation/limit/retry tests are green;
+- WorkManager constraints/unique-work/retry tests are green;
+- bounded-pass continuation tests are green;
+- committed generated Room v5 schema matches build output;
 - Android lint is green;
-- `assembleDebug` is green;
-- GitHub Actions for the current head is fully green;
-- clean checkout uses only the committed Gradle Wrapper;
-- `docs/AUDIT-2026-09-15.md` classifies D1–D11;
-- no known Critical/High data-integrity defect remains.
+- `assembleDebug` and APK identity/signature gates are green;
+- GitHub Actions for the **current PR head** is fully green;
+- `docs/AUDIT-2026-09-15.md` reflects stage-2 results;
+- no known Critical/High defect remains in the PR scope.
 
-Until every gate above is satisfied, PR #15 stays Draft. This document does not authorize automatic merge; merge remains a separate explicit action.
+D11 (UI polling) remains outside this integrity scope. The continuation-backoff refinement is also non-blocking because persisted work is not lost.
+
+Until the documentation-updated current head passes the workflow above, PR #16 stays Draft. This document does not authorize automatic merge; merge remains a separate explicit action.

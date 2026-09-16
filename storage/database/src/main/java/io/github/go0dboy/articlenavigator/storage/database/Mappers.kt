@@ -97,6 +97,8 @@ internal fun DiscoveredItem.toEntity() = DiscoveredItemEntity(
     processingAttempts = processingAttempts,
     nextProcessingAtEpochMillis = nextProcessingAt?.toEpochMilli(),
     lastProcessingError = lastProcessingError,
+    processingLeaseToken = null,
+    processingLeaseExpiresAtEpochMillis = null,
 )
 
 internal fun DiscoveredItemEntity.toDomain() = DiscoveredItem(
@@ -118,12 +120,23 @@ internal fun DiscoveredItemEntity.toDomain() = DiscoveredItem(
 )
 
 internal fun RawContent.toEntity() = RawContentEntity(
-    discoveredItemId.value, mimeType, payload, fetchedAt.toEpochMilli(), httpStatus, expiresAt?.toEpochMilli(),
+    discoveredItemId = discoveredItemId.value,
+    contentType = contentType,
+    payload = payload,
+    resolvedUrl = resolvedUrl,
+    fetchedAtEpochMillis = fetchedAt.toEpochMilli(),
+    httpStatus = httpStatus,
+    expiresAtEpochMillis = expiresAt?.toEpochMilli(),
 )
 
 internal fun RawContentEntity.toDomain() = RawContent(
-    DiscoveredItemId(discoveredItemId), mimeType, payload, Instant.ofEpochMilli(fetchedAtEpochMillis), httpStatus,
-    expiresAtEpochMillis?.let(Instant::ofEpochMilli),
+    discoveredItemId = DiscoveredItemId(discoveredItemId),
+    contentType = contentType,
+    payload = payload,
+    resolvedUrl = resolvedUrl,
+    fetchedAt = Instant.ofEpochMilli(fetchedAtEpochMillis),
+    httpStatus = httpStatus,
+    expiresAt = expiresAtEpochMillis?.let(Instant::ofEpochMilli),
 )
 
 internal fun InboxItem.toEntity() = InboxItemEntity(

@@ -1,16 +1,20 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
+import io.github.go0dboy.articlenavigator.core.data.ArticleProcessingLease
 import io.github.go0dboy.articlenavigator.core.data.CollectionCommitOutcome
 import io.github.go0dboy.articlenavigator.core.data.CollectionRepository
 import io.github.go0dboy.articlenavigator.core.data.CollectionStateRepository
 import io.github.go0dboy.articlenavigator.core.data.InboxRepository
+import io.github.go0dboy.articlenavigator.core.data.IngestionFinalizeOutcome
 import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
+import io.github.go0dboy.articlenavigator.core.data.IngestionSeedRepository
 import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceCollectionLease
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
+import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
 import io.github.go0dboy.articlenavigator.core.model.Document
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
@@ -130,47 +134,157 @@ class RoomCollectionRepository(private val dao: CollectionDao) : CollectionRepos
     }
 }
 
-class RoomIngestionRepository(private val dao: IngestionDao) : IngestionRepository {
+class RoomIngestionRepository(
+    private val dao: IngestionDao,
+    private val processingDao: ArticleProcessingDao,
+) : IngestionRepository, IngestionSeedRepository {
     override suspend fun upsertDiscovered(item: DiscoveredItem) = dao.upsertDiscovered(item.toEntity())
     override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = dao.findDiscoveredById(id.value)?.toDomain()
     override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? = dao.findDiscovered(sourceId.value, url)?.toDomain()
     override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> =
         dao.findReadyForProcessing(now.toEpochMilli(), limit).map { it.toDomain() }
 
-    override suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean =
-        dao.markProcessed(id.value, canonicalUrl) == 1
+    override suspend fun tryClaimNext(
+        runToken: String,
+        now: Instant,
+        leaseExpiresAt: Instant,
+        isUnmeteredNetwork: Boolean,
+    ): ArticleProcessingLease? = processingDao.tryClaimNext(
+        runToken = runToken,
+        nowEpochMillis = now.toEpochMilli(),
+        leaseExpiresAtEpochMillis = leaseExpiresAt.toEpochMilli(),
+        isUnmeteredNetwork = isUnmeteredNetwork,
+    )?.let { ArticleProcessingLease(it.toDomain(), runToken, leaseExpiresAt) }
+
+    override suspend fun releaseProcessing(lease: ArticleProcessingLease) {
+        processingDao.release(lease.item.id.value, lease.runToken)
+    }
+
+    override suspend fun storeRawContent(
+        lease: ArticleProcessingLease,
+        content: RawContent,
+        at: Instant,
+    ): Boolean = processingDao.storeRawOwned(
+        id = lease.item.id.value,
+        runToken = lease.runToken,
+        atEpochMillis = at.toEpochMilli(),
+        content = content.toEntity(),
+    )
+
+    override suspend fun loadRawContent(lease: ArticleProcessingLease): RawContent? =
+        processingDao.raw(lease.item.id.value)?.toDomain()
 
     override suspend fun markFetched(
-        id: DiscoveredItemId,
+        lease: ArticleProcessingLease,
         canonicalUrl: String,
         resolvedUrl: String?,
         contentHash: String,
-    ): Boolean = dao.markFetched(id.value, canonicalUrl, resolvedUrl, contentHash) == 1
+        at: Instant,
+    ): Boolean = processingDao.markFetchedOwned(
+        id = lease.item.id.value,
+        runToken = lease.runToken,
+        atEpochMillis = at.toEpochMilli(),
+        canonicalUrl = canonicalUrl,
+        resolvedUrl = resolvedUrl,
+        contentHash = contentHash,
+    ) == 1
 
     override suspend fun markFailed(
-        id: DiscoveredItemId,
+        lease: ArticleProcessingLease,
         processingAttempts: Int,
         nextProcessingAt: Instant,
         lastProcessingError: String,
-    ): Boolean = dao.markFailed(
-        id = id.value,
+        at: Instant,
+    ): Boolean = processingDao.markFailedOwned(
+        id = lease.item.id.value,
+        runToken = lease.runToken,
+        atEpochMillis = at.toEpochMilli(),
         processingAttempts = processingAttempts,
         nextProcessingAtEpochMillis = nextProcessingAt.toEpochMilli(),
         lastProcessingError = lastProcessingError,
     ) == 1
 
     override suspend fun markSkipped(
+        lease: ArticleProcessingLease,
+        canonicalUrl: String?,
+        lastProcessingError: String,
+        at: Instant,
+    ): Boolean = processingDao.skipOwned(
+        id = lease.item.id.value,
+        runToken = lease.runToken,
+        atEpochMillis = at.toEpochMilli(),
+        canonicalUrl = canonicalUrl,
+        lastProcessingError = lastProcessingError,
+    )
+
+    override suspend fun finalizeSuccess(
+        lease: ArticleProcessingLease,
+        item: InboxItem,
+        origin: InboxOrigin,
+        canonicalUrlHash: String,
+        completedAt: Instant,
+    ): IngestionFinalizeOutcome = processingDao.finalizeSuccess(
+        id = lease.item.id.value,
+        runToken = lease.runToken,
+        atEpochMillis = completedAt.toEpochMilli(),
+        item = item.toEntity(),
+        origin = origin.toEntity(),
+        canonicalUrlHash = canonicalUrlHash,
+    )
+
+    /** Explicit maintenance transitions; runtime ingestion never calls these id-only methods. */
+    override suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean {
+        val current = dao.findDiscoveredById(id.value)?.toDomain() ?: return false
+        if (current.status == DiscoveryStatus.PROCESSED || current.status == DiscoveryStatus.SKIPPED) return false
+        return dao.markProcessed(id.value, canonicalUrl) == 1
+    }
+
+    override suspend fun markFetched(
+        id: DiscoveredItemId,
+        canonicalUrl: String,
+        resolvedUrl: String?,
+        contentHash: String,
+    ): Boolean {
+        val current = dao.findDiscoveredById(id.value)?.toDomain() ?: return false
+        if (current.status == DiscoveryStatus.PROCESSED || current.status == DiscoveryStatus.SKIPPED) return false
+        return dao.markFetched(id.value, canonicalUrl, resolvedUrl, contentHash) == 1
+    }
+
+    override suspend fun markFailed(
+        id: DiscoveredItemId,
+        processingAttempts: Int,
+        nextProcessingAt: Instant,
+        lastProcessingError: String,
+    ): Boolean {
+        val current = dao.findDiscoveredById(id.value)?.toDomain() ?: return false
+        if (current.status == DiscoveryStatus.PROCESSED || current.status == DiscoveryStatus.SKIPPED) return false
+        return dao.markFailed(
+            id = id.value,
+            processingAttempts = processingAttempts,
+            nextProcessingAtEpochMillis = nextProcessingAt.toEpochMilli(),
+            lastProcessingError = lastProcessingError,
+        ) == 1
+    }
+
+    override suspend fun markSkipped(
         id: DiscoveredItemId,
         canonicalUrl: String?,
         lastProcessingError: String,
-    ): Boolean = dao.markSkipped(id.value, canonicalUrl, lastProcessingError) == 1
+    ): Boolean {
+        val current = dao.findDiscoveredById(id.value)?.toDomain() ?: return false
+        if (current.status == DiscoveryStatus.PROCESSED || current.status == DiscoveryStatus.SKIPPED) return false
+        return dao.markSkipped(id.value, canonicalUrl, lastProcessingError) == 1
+    }
 
     override suspend fun storeRawContent(content: RawContent) = dao.upsertRawContent(content.toEntity())
     override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = dao.findRawContent(id.value)?.toDomain()
     override suspend fun deleteRawContent(id: DiscoveredItemId) = dao.deleteRawContent(id.value)
 }
 
-class RoomInboxRepository(private val dao: InboxDao) : InboxRepository {
+class RoomInboxRepository(
+    private val dao: InboxDao,
+    private val lifecycleDao: InboxLifecycleDao,
+) : InboxRepository {
     override suspend fun put(item: InboxItem, origin: InboxOrigin) = dao.put(item.toEntity(), origin.toEntity())
     override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) = dao.attachOrigin(itemId.value, origin.toEntity())
     override suspend fun listPending(limit: Int): List<InboxItem> = dao.listPending(limit).map { it.toDomain() }
@@ -178,6 +292,19 @@ class RoomInboxRepository(private val dao: InboxDao) : InboxRepository {
     override suspend fun findByCanonicalUrl(canonicalUrl: String): InboxItem? = dao.findByCanonicalUrl(canonicalUrl)?.toDomain()
     override suspend fun findByContentHash(contentHash: String): InboxItem? = dao.findByContentHash(contentHash)?.toDomain()
     override suspend fun origins(id: InboxItemId): List<InboxOrigin> = dao.origins(id.value).map { it.toDomain() }
+
+    override suspend fun saveCurrent(id: InboxItemId, at: Instant, parserVersion: String): DocumentId? =
+        lifecycleDao.saveCurrent(id.value, at.toEpochMilli(), parserVersion)?.let(::DocumentId)
+
+    override suspend fun discardCurrent(
+        id: InboxItemId,
+        disposition: ContentDisposition,
+        at: Instant,
+    ): Boolean {
+        require(disposition == ContentDisposition.REJECTED || disposition == ContentDisposition.READ_AND_DISCARDED)
+        return lifecycleDao.discardCurrent(id.value, disposition.name, at.toEpochMilli())
+    }
+
     override suspend fun discard(
         id: InboxItemId,
         disposition: ContentDisposition,
@@ -186,6 +313,7 @@ class RoomInboxRepository(private val dao: InboxDao) : InboxRepository {
         require(disposition == ContentDisposition.REJECTED || disposition == ContentDisposition.READ_AND_DISCARDED)
         dao.discard(id.value, fingerprints.map { it.toEntity() })
     }
+
     override suspend fun save(
         id: InboxItemId,
         document: Document,

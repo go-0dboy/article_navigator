@@ -60,7 +60,7 @@ class CollectionHardeningIntegrationTest {
             .build()
         sources = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
         collection = RoomCollectionRepository(database.collectionDao())
-        ingestion = RoomIngestionRepository(database.ingestionDao())
+        ingestion = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
         knowledge = RoomKnowledgeRepository(database.documentDao())
     }
 

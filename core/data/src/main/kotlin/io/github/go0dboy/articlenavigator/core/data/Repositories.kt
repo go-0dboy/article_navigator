@@ -88,14 +88,88 @@ interface CollectionRepository {
     suspend fun release(lease: SourceCollectionLease)
 }
 
+/** Persisted ownership of one article-processing attempt. */
+data class ArticleProcessingLease(
+    val item: DiscoveredItem,
+    val runToken: String,
+    val expiresAt: Instant,
+)
+
+enum class IngestionFinalizeOutcome {
+    ADDED_TO_INBOX,
+    MERGED_INTO_INBOX,
+    ALREADY_KNOWN,
+    STALE,
+}
+
+/**
+ * Runtime article-processing contract. Every mutating operation is ownership-aware and mandatory:
+ * there is deliberately no default implementation that can degrade a lease into a plain read or
+ * an id-only update. A network request may outlive a lease, but an expired/replaced owner cannot
+ * persist raw, intermediate, retry, skip, or final results.
+ */
 interface IngestionRepository {
-    /** Creation/import/test seeding path. Runtime processing transitions must use targeted methods. */
+    suspend fun tryClaimNext(
+        runToken: String,
+        now: Instant,
+        leaseExpiresAt: Instant,
+        isUnmeteredNetwork: Boolean,
+    ): ArticleProcessingLease?
+
+    suspend fun releaseProcessing(lease: ArticleProcessingLease)
+
+    suspend fun storeRawContent(
+        lease: ArticleProcessingLease,
+        content: RawContent,
+        at: Instant,
+    ): Boolean
+
+    suspend fun loadRawContent(lease: ArticleProcessingLease): RawContent?
+
+    suspend fun markFetched(
+        lease: ArticleProcessingLease,
+        canonicalUrl: String,
+        resolvedUrl: String?,
+        contentHash: String,
+        at: Instant,
+    ): Boolean
+
+    suspend fun markFailed(
+        lease: ArticleProcessingLease,
+        processingAttempts: Int,
+        nextProcessingAt: Instant,
+        lastProcessingError: String,
+        at: Instant,
+    ): Boolean
+
+    suspend fun markSkipped(
+        lease: ArticleProcessingLease,
+        canonicalUrl: String?,
+        lastProcessingError: String,
+        at: Instant,
+    ): Boolean
+
+    /** Re-checks ownership and completes deduplication plus Inbox/Knowledge state atomically. */
+    suspend fun finalizeSuccess(
+        lease: ArticleProcessingLease,
+        item: InboxItem,
+        origin: InboxOrigin,
+        canonicalUrlHash: String,
+        completedAt: Instant,
+    ): IngestionFinalizeOutcome
+}
+
+/**
+ * Explicit maintenance/seeding surface used by migration, persistence and test setup code. Runtime
+ * processing must depend on [IngestionRepository] instead, so id-only transitions cannot bypass
+ * persisted ownership accidentally.
+ */
+interface IngestionSeedRepository {
     suspend fun upsertDiscovered(item: DiscoveredItem)
     suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem?
     suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem?
     suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem>
 
-    /** Updates only pipeline-owned state and never rewrites discovery timestamps/sightings. */
     suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean
     suspend fun markFetched(
         id: DiscoveredItemId,
@@ -118,15 +192,12 @@ interface IngestionRepository {
 
 interface InboxRepository {
     /**
-     * Atomically stages a fetched item in Inbox and commits its discovery origin:
-     * the referenced discovery becomes PROCESSED and its temporary raw payload is removed.
+     * Atomically stages a fetched item in Inbox and commits its discovery origin.
+     * Runtime ingestion uses [IngestionRepository.finalizeSuccess]; this path remains an explicit
+     * persistence/import helper and must not be used to bypass article-processing ownership.
      */
     suspend fun put(item: InboxItem, origin: InboxOrigin)
 
-    /**
-     * Atomically attaches another origin to an existing Inbox item and commits that discovery
-     * with the same PROCESSED/raw-cleanup semantics as [put].
-     */
     suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin)
 
     suspend fun listPending(limit: Int = 100): List<InboxItem>
@@ -135,6 +206,28 @@ interface InboxRepository {
     suspend fun findByContentHash(contentHash: String): InboxItem?
     suspend fun origins(id: InboxItemId): List<InboxOrigin>
 
+    /**
+     * Reads the current Inbox row and every current origin, resolves any existing Document,
+     * persists Document/version/provenance/fingerprints, and removes Inbox in one DB transaction.
+     * Returns null when another committed action already consumed the Inbox row.
+     */
+    suspend fun saveCurrent(
+        id: InboxItemId,
+        at: Instant,
+        parserVersion: String,
+    ): DocumentId?
+
+    /**
+     * Reads current item/origins, persists all dismissal fingerprints, and removes Inbox in one
+     * transaction. Returns false when the row was already consumed by another committed action.
+     */
+    suspend fun discardCurrent(
+        id: InboxItemId,
+        disposition: ContentDisposition,
+        at: Instant,
+    ): Boolean
+
+    /** Legacy/import helpers; UI/runtime user actions must use saveCurrent/discardCurrent. */
     suspend fun discard(
         id: InboxItemId,
         disposition: ContentDisposition,

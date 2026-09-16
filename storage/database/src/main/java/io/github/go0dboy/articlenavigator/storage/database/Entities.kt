@@ -63,6 +63,7 @@ data class SourceCollectionStateEntity(
         Index("status"),
         Index("nextProcessingAtEpochMillis"),
         Index("lastSeenAtEpochMillis"),
+        Index("processingLeaseExpiresAtEpochMillis"),
     ],
 )
 data class DiscoveredItemEntity(
@@ -86,6 +87,8 @@ data class DiscoveredItemEntity(
     @ColumnInfo(defaultValue = "0") val processingAttempts: Int,
     val nextProcessingAtEpochMillis: Long?,
     val lastProcessingError: String?,
+    val processingLeaseToken: String?,
+    val processingLeaseExpiresAtEpochMillis: Long?,
 )
 
 @Entity(
@@ -94,8 +97,9 @@ data class DiscoveredItemEntity(
 )
 data class RawContentEntity(
     @PrimaryKey val discoveredItemId: String,
-    val mimeType: String?,
-    val payload: String,
+    val contentType: String?,
+    val payload: ByteArray,
+    val resolvedUrl: String?,
     val fetchedAtEpochMillis: Long,
     val httpStatus: Int,
     val expiresAtEpochMillis: Long?,

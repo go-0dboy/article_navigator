@@ -3,18 +3,14 @@ package io.github.go0dboy.articlenavigator.pipeline
 import io.github.go0dboy.articlenavigator.collector.api.DiscoveryResult
 import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
-import io.github.go0dboy.articlenavigator.core.data.InboxRepository
+import io.github.go0dboy.articlenavigator.core.data.ArticleProcessingLease
+import io.github.go0dboy.articlenavigator.core.data.IngestionFinalizeOutcome
 import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
-import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
 import io.github.go0dboy.articlenavigator.core.model.DiscoveryStatus
-import io.github.go0dboy.articlenavigator.core.model.Document
-import io.github.go0dboy.articlenavigator.core.model.DocumentId
-import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
-import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
@@ -32,6 +28,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -53,9 +50,7 @@ class IngestionPipelineTest {
     fun `new article is extracted and placed into Inbox`() = runTest {
         val discovered = discovered("https://example.test/article")
         val ingestion = FakeIngestionRepository(discovered)
-        val inbox = FakeInboxRepository(ingestion)
-        val knowledge = FakeKnowledgeRepository()
-        val pipeline = pipeline(ingestion, inbox, knowledge) {
+        val pipeline = pipeline(ingestion) {
             FetchResult(
                 it,
                 200,
@@ -69,20 +64,19 @@ class IngestionPipelineTest {
         assertEquals(1, report.addedToInbox)
         assertEquals(0, report.failed)
         assertEquals(0, report.skipped)
-        assertEquals(1, inbox.items.size)
-        assertEquals("Article title", inbox.items.values.single().title)
-        assertTrue(inbox.items.values.single().normalizedText.contains("Useful body text."))
+        assertEquals(1, ingestion.inboxItems.size)
+        assertEquals("Article title", ingestion.inboxItems.values.single().title)
+        assertTrue(ingestion.inboxItems.values.single().normalizedText.contains("Useful body text."))
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(discovered.id).status)
         assertEquals(null, ingestion.raw[discovered.id])
+        assertEquals(null, ingestion.activeLeaseToken)
     }
 
     @Test
-    fun `previously dismissed URL is not fetched again`() = runTest {
+    fun `previously dismissed URL is not recreated`() = runTest {
         val discovered = discovered("https://example.test/seen")
-        val ingestion = FakeIngestionRepository(discovered)
-        val inbox = FakeInboxRepository(ingestion)
-        val knowledge = FakeKnowledgeRepository().apply {
-            seenBySource[source.id] = SeenFingerprint(
+        val ingestion = FakeIngestionRepository(discovered).apply {
+            fingerprints += SeenFingerprint(
                 canonicalUrlHash = sha256ForTest("https://example.test/seen"),
                 contentHash = null,
                 sourceId = source.id,
@@ -91,25 +85,25 @@ class IngestionPipelineTest {
             )
         }
         var fetches = 0
-        val pipeline = pipeline(ingestion, inbox, knowledge) {
+        val pipeline = pipeline(ingestion) {
             fetches++
-            error("fetch must not run")
+            FetchResult(it, 200, "text/html", "<article>Known body</article>".toByteArray())
         }
 
         val report = pipeline.processReady()
 
         assertEquals(1, report.alreadyKnown)
-        assertEquals(0, fetches)
+        assertEquals(1, fetches)
+        assertEquals(0, ingestion.inboxItems.size)
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(discovered.id).status)
+        assertEquals(ContentDisposition.REJECTED, ingestion.fingerprints.last().disposition)
     }
 
     @Test
     fun `network failure persists retry backoff`() = runTest {
         val discovered = discovered("https://example.test/failure")
         val ingestion = FakeIngestionRepository(discovered)
-        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
-            throw IOException("network down")
-        }
+        val pipeline = pipeline(ingestion) { throw IOException("network down") }
 
         val report = pipeline.processReady()
         val failed = ingestion.items.getValue(discovered.id)
@@ -120,15 +114,14 @@ class IngestionPipelineTest {
         assertEquals(1, failed.processingAttempts)
         assertEquals(now.plus(Duration.ofMinutes(15)), failed.nextProcessingAt)
         assertTrue(failed.lastProcessingError!!.contains("network down"))
+        assertEquals(null, ingestion.activeLeaseToken)
     }
 
     @Test
     fun `server failure remains retryable`() = runTest {
         val discovered = discovered("https://example.test/server-failure")
         val ingestion = FakeIngestionRepository(discovered)
-        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
-            FetchResult(it, 503, "text/plain", "unavailable".toByteArray())
-        }
+        val pipeline = pipeline(ingestion) { FetchResult(it, 503, "text/plain", "unavailable".toByteArray()) }
 
         val report = pipeline.processReady()
         val failed = ingestion.items.getValue(discovered.id)
@@ -142,9 +135,7 @@ class IngestionPipelineTest {
     fun `permanent client response is skipped without retry`() = runTest {
         val discovered = discovered("https://example.test/missing")
         val ingestion = FakeIngestionRepository(discovered)
-        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
-            FetchResult(it, 404, "text/plain", "missing".toByteArray())
-        }
+        val pipeline = pipeline(ingestion) { FetchResult(it, 404, "text/plain", "missing".toByteArray()) }
 
         val report = pipeline.processReady()
         val skipped = ingestion.items.getValue(discovered.id)
@@ -154,16 +145,14 @@ class IngestionPipelineTest {
         assertEquals(DiscoveryStatus.SKIPPED, skipped.status)
         assertEquals(null, skipped.nextProcessingAt)
         assertTrue(skipped.lastProcessingError!!.contains("404"))
-        assertTrue(ingestion.findReadyForProcessing(now.plus(Duration.ofDays(7)), 10).isEmpty())
+        assertEquals(null, ingestion.raw[discovered.id])
     }
 
     @Test
     fun `unsupported content is skipped and temporary payload is removed`() = runTest {
         val discovered = discovered("https://example.test/image")
         val ingestion = FakeIngestionRepository(discovered)
-        val pipeline = pipeline(ingestion, FakeInboxRepository(ingestion), FakeKnowledgeRepository()) {
-            FetchResult(it, 200, "image/png", byteArrayOf(1, 2, 3))
-        }
+        val pipeline = pipeline(ingestion) { FetchResult(it, 200, "image/png", byteArrayOf(1, 2, 3)) }
 
         val report = pipeline.processReady()
         val skipped = ingestion.items.getValue(discovered.id)
@@ -177,8 +166,6 @@ class IngestionPipelineTest {
     @Test
     fun `same normalized content merges provenance into existing Inbox item`() = runTest {
         val discovered = discovered("https://example.test/alternate")
-        val ingestion = FakeIngestionRepository(discovered)
-        val inbox = FakeInboxRepository(ingestion)
         val body = "<article><p>Same durable content</p></article>".toByteArray()
         val extracted = DefaultContentExtractor().extract(body, "text/html", discovered.url)
         val existing = InboxItem(
@@ -190,35 +177,70 @@ class IngestionPipelineTest {
             createdAt = now.minusSeconds(10),
             updatedAt = now.minusSeconds(10),
         )
-        inbox.items[existing.id] = existing
-        val pipeline = pipeline(ingestion, inbox, FakeKnowledgeRepository()) {
-            FetchResult(it, 200, "text/html", body)
-        }
+        val ingestion = FakeIngestionRepository(discovered).apply { inboxItems[existing.id] = existing }
+        val pipeline = pipeline(ingestion) { FetchResult(it, 200, "text/html", body) }
 
         val report = pipeline.processReady()
 
         assertEquals(1, report.mergedIntoInbox)
-        assertEquals(1, inbox.items.size)
-        assertEquals(1, inbox.origins.getValue(existing.id).size)
+        assertEquals(1, ingestion.inboxItems.size)
+        assertEquals(1, ingestion.inboxOrigins.getValue(existing.id).size)
+        assertEquals(discovered.id, ingestion.inboxOrigins.getValue(existing.id).single().discoveredItemId)
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(discovered.id).status)
+    }
+
+    @Test
+    fun `item cap requests continuation only when another eligible item remains`() = runTest {
+        val first = discovered("https://example.test/first")
+        val second = discovered("https://example.test/second")
+        val ingestion = FakeIngestionRepository(first).apply { items[second.id] = second }
+        val pipeline = pipeline(ingestion) {
+            FetchResult(it, 200, "text/html", "<article>${it.id.value} body</article>".toByteArray())
+        }
+
+        val firstPass = pipeline.processReady(limit = 1)
+
+        assertEquals(1, firstPass.processed)
+        assertTrue(firstPass.budgetExhausted)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(first.id).status)
+        assertEquals(DiscoveryStatus.DISCOVERED, ingestion.items.getValue(second.id).status)
+        assertEquals(null, ingestion.activeLeaseToken)
+
+        val secondPass = pipeline.processReady(limit = 1)
+
+        assertEquals(1, secondPass.processed)
+        assertFalse(secondPass.budgetExhausted)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(second.id).status)
+        assertEquals(null, ingestion.activeLeaseToken)
+    }
+
+    @Test
+    fun `exactly full pass without remaining work does not request continuation`() = runTest {
+        val only = discovered("https://example.test/only")
+        val ingestion = FakeIngestionRepository(only)
+        val pipeline = pipeline(ingestion) {
+            FetchResult(it, 200, "text/html", "<article>Only body</article>".toByteArray())
+        }
+
+        val report = pipeline.processReady(limit = 1)
+
+        assertEquals(1, report.processed)
+        assertFalse(report.budgetExhausted)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(only.id).status)
+        assertEquals(null, ingestion.activeLeaseToken)
     }
 
     private fun pipeline(
         ingestion: FakeIngestionRepository,
-        inbox: FakeInboxRepository,
-        knowledge: FakeKnowledgeRepository,
         fetch: suspend (DiscoveredItem) -> FetchResult,
     ) = IngestionPipeline(
         sourceRepository = PipelineTestSourceRepository(source),
         ingestionRepository = ingestion,
-        inboxRepository = inbox,
-        knowledgeRepository = knowledge,
         adapterResolver = SourceAdapterResolver {
             object : SourceAdapter {
                 override val adapterType = "test"
                 override val supportedTypes = setOf(SourceType.RSS)
-                override suspend fun discover(source: Source, cursor: SourceCursor?): DiscoveryResult =
-                    error("not used")
+                override suspend fun discover(source: Source, cursor: SourceCursor?): DiscoveryResult = error("not used")
                 override suspend fun fetch(item: DiscoveredItem): FetchResult = fetch(item)
             }
         },
@@ -248,44 +270,54 @@ private class PipelineTestSourceRepository(private val source: Source) : SourceR
 private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionRepository {
     val items = linkedMapOf(initial.id to initial)
     val raw = mutableMapOf<DiscoveredItemId, RawContent>()
-    override suspend fun upsertDiscovered(item: DiscoveredItem) { items[item.id] = item }
-    override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = items[id]
-    override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? =
-        items.values.firstOrNull { it.sourceId == sourceId && it.url == url }
-    override suspend fun findReadyForProcessing(now: Instant, limit: Int): List<DiscoveredItem> = items.values
-        .filter { item ->
-            if (item.status == DiscoveryStatus.DISCOVERED) {
-                true
-            } else if (item.status == DiscoveryStatus.FAILED) {
-                val retryAt = item.nextProcessingAt
-                retryAt == null || !retryAt.isAfter(now)
-            } else {
-                false
-            }
-        }
-        .take(limit)
+    val inboxItems = linkedMapOf<InboxItemId, InboxItem>()
+    val inboxOrigins = mutableMapOf<InboxItemId, MutableList<InboxOrigin>>()
+    val fingerprints = mutableListOf<SeenFingerprint>()
+    var activeLeaseToken: String? = null
+        private set
+    private var activeLeaseExpiresAt: Instant? = null
 
-    override suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean {
-        val item = items[id] ?: return false
-        items[id] = item.copy(
-            canonicalUrl = canonicalUrl ?: item.canonicalUrl,
-            status = DiscoveryStatus.PROCESSED,
-            nextProcessingAt = null,
-            lastProcessingError = null,
-        )
+    override suspend fun tryClaimNext(
+        runToken: String,
+        now: Instant,
+        leaseExpiresAt: Instant,
+        isUnmeteredNetwork: Boolean,
+    ): ArticleProcessingLease? {
+        if (activeLeaseToken != null && activeLeaseExpiresAt?.isAfter(now) == true) return null
+        val candidate = items.values.firstOrNull { item ->
+            val retryAt = item.nextProcessingAt
+            item.status == DiscoveryStatus.DISCOVERED || item.status == DiscoveryStatus.FETCHED ||
+                (item.status == DiscoveryStatus.FAILED && (retryAt == null || !retryAt.isAfter(now)))
+        } ?: return null
+        activeLeaseToken = runToken
+        activeLeaseExpiresAt = leaseExpiresAt
+        return ArticleProcessingLease(candidate, runToken, leaseExpiresAt)
+    }
+
+    override suspend fun releaseProcessing(lease: ArticleProcessingLease) {
+        if (activeLeaseToken == lease.runToken) clearLease()
+    }
+
+    override suspend fun storeRawContent(lease: ArticleProcessingLease, content: RawContent, at: Instant): Boolean {
+        if (!owns(lease, at)) return false
+        raw[content.discoveredItemId] = content
         return true
     }
 
+    override suspend fun loadRawContent(lease: ArticleProcessingLease): RawContent? = raw[lease.item.id]
+
     override suspend fun markFetched(
-        id: DiscoveredItemId,
+        lease: ArticleProcessingLease,
         canonicalUrl: String,
         resolvedUrl: String?,
         contentHash: String,
+        at: Instant,
     ): Boolean {
-        val item = items[id] ?: return false
-        items[id] = item.copy(
+        if (!owns(lease, at)) return false
+        val current = items[lease.item.id] ?: return false
+        items[lease.item.id] = current.copy(
             canonicalUrl = canonicalUrl,
-            resolvedUrl = resolvedUrl ?: item.resolvedUrl,
+            resolvedUrl = resolvedUrl ?: current.resolvedUrl,
             contentHash = contentHash,
             status = DiscoveryStatus.FETCHED,
             nextProcessingAt = null,
@@ -295,109 +327,100 @@ private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionReposi
     }
 
     override suspend fun markFailed(
-        id: DiscoveredItemId,
+        lease: ArticleProcessingLease,
         processingAttempts: Int,
         nextProcessingAt: Instant,
         lastProcessingError: String,
+        at: Instant,
     ): Boolean {
-        val item = items[id] ?: return false
-        items[id] = item.copy(
+        if (!owns(lease, at)) return false
+        val current = items[lease.item.id] ?: return false
+        items[lease.item.id] = current.copy(
             status = DiscoveryStatus.FAILED,
             processingAttempts = processingAttempts,
             nextProcessingAt = nextProcessingAt,
             lastProcessingError = lastProcessingError,
         )
+        clearLease()
         return true
     }
 
     override suspend fun markSkipped(
-        id: DiscoveredItemId,
+        lease: ArticleProcessingLease,
         canonicalUrl: String?,
         lastProcessingError: String,
+        at: Instant,
     ): Boolean {
-        val item = items[id] ?: return false
-        items[id] = item.copy(
-            canonicalUrl = canonicalUrl ?: item.canonicalUrl,
+        if (!owns(lease, at)) return false
+        val current = items[lease.item.id] ?: return false
+        items[lease.item.id] = current.copy(
+            canonicalUrl = canonicalUrl ?: current.canonicalUrl,
             status = DiscoveryStatus.SKIPPED,
             nextProcessingAt = null,
             lastProcessingError = lastProcessingError,
         )
+        raw.remove(lease.item.id)
+        clearLease()
         return true
     }
 
-    override suspend fun storeRawContent(content: RawContent) { raw[content.discoveredItemId] = content }
-    override suspend fun loadRawContent(id: DiscoveredItemId): RawContent? = raw[id]
-    override suspend fun deleteRawContent(id: DiscoveredItemId) { raw.remove(id) }
-
-    suspend fun commitOrigin(origin: InboxOrigin) {
-        items[origin.discoveredItemId]?.let { item ->
-            items[origin.discoveredItemId] = item.copy(
-                status = DiscoveryStatus.PROCESSED,
-                nextProcessingAt = null,
-                lastProcessingError = null,
-            )
+    override suspend fun finalizeSuccess(
+        lease: ArticleProcessingLease,
+        item: InboxItem,
+        origin: InboxOrigin,
+        canonicalUrlHash: String,
+        completedAt: Instant,
+    ): IngestionFinalizeOutcome {
+        if (!owns(lease, completedAt)) return IngestionFinalizeOutcome.STALE
+        val dismissed = fingerprints.lastOrNull {
+            (it.canonicalUrlHash == canonicalUrlHash || (it.contentHash != null && it.contentHash == item.contentHash)) &&
+                (it.disposition == ContentDisposition.REJECTED || it.disposition == ContentDisposition.READ_AND_DISCARDED)
         }
-        raw.remove(origin.discoveredItemId)
+        val outcome = if (dismissed != null) {
+            fingerprints += SeenFingerprint(
+                canonicalUrlHash = canonicalUrlHash,
+                contentHash = item.contentHash,
+                sourceId = origin.sourceId,
+                seenAt = completedAt,
+                disposition = dismissed.disposition,
+            )
+            IngestionFinalizeOutcome.ALREADY_KNOWN
+        } else {
+            val existing = inboxItems.values.firstOrNull {
+                it.canonicalUrl == item.canonicalUrl || it.contentHash == item.contentHash
+            }
+            if (existing != null) {
+                inboxOrigins.getOrPut(existing.id) { mutableListOf() }.add(origin.copy(inboxItemId = existing.id))
+                IngestionFinalizeOutcome.MERGED_INTO_INBOX
+            } else {
+                inboxItems[item.id] = item
+                inboxOrigins.getOrPut(item.id) { mutableListOf() }.add(origin)
+                IngestionFinalizeOutcome.ADDED_TO_INBOX
+            }
+        }
+        val current = items.getValue(lease.item.id)
+        items[lease.item.id] = current.copy(
+            canonicalUrl = item.canonicalUrl,
+            resolvedUrl = origin.resolvedUrl ?: current.resolvedUrl,
+            contentHash = item.contentHash,
+            status = DiscoveryStatus.PROCESSED,
+            nextProcessingAt = null,
+            lastProcessingError = null,
+        )
+        raw.remove(lease.item.id)
+        clearLease()
+        return outcome
     }
-}
 
-private class FakeInboxRepository(
-    private val ingestion: FakeIngestionRepository,
-) : InboxRepository {
-    val items = linkedMapOf<InboxItemId, InboxItem>()
-    val origins = mutableMapOf<InboxItemId, MutableList<InboxOrigin>>()
+    private fun owns(lease: ArticleProcessingLease, at: Instant): Boolean =
+        activeLeaseToken == lease.runToken && activeLeaseExpiresAt?.isAfter(at) == true
 
-    override suspend fun put(item: InboxItem, origin: InboxOrigin) {
-        items[item.id] = item
-        origins.getOrPut(item.id) { mutableListOf() }.add(origin)
-        ingestion.commitOrigin(origin)
+    private fun clearLease() {
+        activeLeaseToken = null
+        activeLeaseExpiresAt = null
     }
-
-    override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) {
-        origins.getOrPut(itemId) { mutableListOf() }.add(origin)
-        ingestion.commitOrigin(origin)
-    }
-
-    override suspend fun listPending(limit: Int): List<InboxItem> = items.values.take(limit)
-    override suspend fun findById(id: InboxItemId): InboxItem? = items[id]
-    override suspend fun findByCanonicalUrl(canonicalUrl: String): InboxItem? =
-        items.values.firstOrNull { it.canonicalUrl == canonicalUrl }
-    override suspend fun findByContentHash(contentHash: String): InboxItem? =
-        items.values.firstOrNull { it.contentHash == contentHash }
-    override suspend fun origins(id: InboxItemId): List<InboxOrigin> = origins[id].orEmpty()
-    override suspend fun discard(id: InboxItemId, disposition: ContentDisposition, fingerprints: List<SeenFingerprint>) {
-        items.remove(id)
-        origins.remove(id)
-    }
-    override suspend fun save(
-        id: InboxItemId,
-        document: Document,
-        version: DocumentVersion,
-        provenances: List<DocumentProvenance>,
-        fingerprints: List<SeenFingerprint>,
-    ) {
-        items.remove(id)
-        origins.remove(id)
-    }
-}
-
-private class FakeKnowledgeRepository : KnowledgeRepository {
-    val documents = mutableListOf<Document>()
-    val seenBySource = mutableMapOf<SourceId, SeenFingerprint>()
-    override suspend fun persist(document: Document, version: DocumentVersion, provenance: DocumentProvenance, fingerprint: SeenFingerprint) { documents += document }
-    override suspend fun findById(id: DocumentId): Document? = documents.firstOrNull { it.id == id }
-    override suspend fun findByCanonicalUrl(canonicalUrl: String): Document? = documents.firstOrNull { it.canonicalUrl == canonicalUrl }
-    override suspend fun findByContentHash(contentHash: String): Document? = documents.firstOrNull { it.contentHash == contentHash }
-    override suspend fun versions(documentId: DocumentId): List<DocumentVersion> = emptyList()
-    override suspend fun provenance(documentId: DocumentId): List<DocumentProvenance> = emptyList()
-    override suspend fun findSeen(canonicalUrlHash: String, sourceId: SourceId): SeenFingerprint? =
-        seenBySource[sourceId]?.takeIf { it.canonicalUrlHash == canonicalUrlHash }
-    override suspend fun recordDiscovery(documentId: DocumentId, provenance: DocumentProvenance, fingerprint: SeenFingerprint, discoveredItemId: DiscoveredItemId) {
-        seenBySource[fingerprint.sourceId] = fingerprint
-    }
-    override suspend fun markDisposition(id: DocumentId, disposition: ContentDisposition, updatedAt: Instant) = Unit
 }
 
 private fun sha256ForTest(value: String): String = java.security.MessageDigest.getInstance("SHA-256")
-    .digest(value.toByteArray())
+    .digest(value.toByteArray(Charsets.UTF_8))
     .joinToString("") { "%02x".format(it) }

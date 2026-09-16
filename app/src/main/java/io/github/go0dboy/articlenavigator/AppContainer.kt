@@ -16,21 +16,22 @@ import io.github.go0dboy.articlenavigator.core.network.OkHttpTransport
 import io.github.go0dboy.articlenavigator.pipeline.InboxService
 import io.github.go0dboy.articlenavigator.pipeline.IngestionPipeline
 import io.github.go0dboy.articlenavigator.pipeline.SourceAdapterResolver
+import io.github.go0dboy.articlenavigator.scheduler.android.CollectionPassReport
 import io.github.go0dboy.articlenavigator.scheduler.android.CollectionWorkScheduler
 import io.github.go0dboy.articlenavigator.scheduler.android.CollectionWorkerDependencies
+import io.github.go0dboy.articlenavigator.scheduler.android.IngestionRunDiagnostics
 import io.github.go0dboy.articlenavigator.scheduler.core.CollectionOrchestrator
 import io.github.go0dboy.articlenavigator.scheduler.core.CollectionRunContext
-import io.github.go0dboy.articlenavigator.scheduler.core.CollectionRunReport
 import io.github.go0dboy.articlenavigator.scheduler.core.SourceAdapterRegistry
 import io.github.go0dboy.articlenavigator.storage.database.ArticleNavigatorDatabase
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_1_2
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_2_3
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_3_4
+import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_4_5
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionStateRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomInboxRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomIngestionRepository
-import io.github.go0dboy.articlenavigator.storage.database.RoomKnowledgeRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomSourceRepository
 import java.time.Duration
 import java.time.Instant
@@ -44,15 +45,14 @@ class AppContainer(
         name = "article-navigator.db",
     )
         .setDriver(BundledSQLiteDriver())
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
         .build()
 
     private val sourceRepository = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
     private val collectionRepository = RoomCollectionRepository(database.collectionDao())
-    private val ingestionRepository = RoomIngestionRepository(database.ingestionDao())
+    private val ingestionRepository = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
     private val stateRepository = RoomCollectionStateRepository(database.collectionStateDao())
-    private val inboxRepository = RoomInboxRepository(database.inboxDao())
-    private val knowledgeRepository = RoomKnowledgeRepository(database.documentDao())
+    private val inboxRepository = RoomInboxRepository(database.inboxDao(), database.inboxLifecycleDao())
 
     private val adapterRegistry = SourceAdapterRegistry(
         listOf(RssAtomSourceAdapter(OkHttpTransport())),
@@ -68,19 +68,39 @@ class AppContainer(
     private val ingestionPipeline = IngestionPipeline(
         sourceRepository = sourceRepository,
         ingestionRepository = ingestionRepository,
-        inboxRepository = inboxRepository,
-        knowledgeRepository = knowledgeRepository,
         adapterResolver = SourceAdapterResolver(adapterRegistry::resolve),
     )
 
     private val inboxService = InboxService(inboxRepository)
 
-    override suspend fun runCollection(isUnmeteredNetwork: Boolean): CollectionRunReport {
+    override suspend fun runCollection(isUnmeteredNetwork: Boolean): CollectionPassReport {
         val diagnosticWasEnabled = sourceRepository.findById(SAMPLE_SOURCE_ID)?.enabled == true
+        val deadline = Instant.now().plus(PASS_BUDGET)
         return try {
-            val report = orchestrator.run(CollectionRunContext(isUnmeteredNetwork))
-            ingestionPipeline.processReady(limit = 20)
-            report
+            val collection = orchestrator.run(
+                CollectionRunContext(
+                    isUnmeteredNetwork = isUnmeteredNetwork,
+                    deadline = deadline,
+                ),
+            )
+            val ingestion = ingestionPipeline.processReady(
+                limit = 20,
+                isUnmeteredNetwork = isUnmeteredNetwork,
+                deadline = deadline,
+            )
+            CollectionPassReport(
+                collection = collection,
+                ingestion = IngestionRunDiagnostics(
+                    processed = ingestion.processed,
+                    addedToInbox = ingestion.addedToInbox,
+                    mergedIntoInbox = ingestion.mergedIntoInbox,
+                    alreadyKnown = ingestion.alreadyKnown,
+                    failed = ingestion.failed,
+                    skipped = ingestion.skipped,
+                    stale = ingestion.stale,
+                    budgetExhausted = ingestion.budgetExhausted,
+                ),
+            )
         } finally {
             if (diagnosticWasEnabled) {
                 sourceRepository.findById(SAMPLE_SOURCE_ID)?.let { source ->
@@ -165,9 +185,9 @@ class AppContainer(
 
     suspend fun loadInbox(): List<InboxItem> = inboxService.list()
 
-    suspend fun rejectInbox(id: InboxItemId) = inboxService.reject(id)
+    suspend fun rejectInbox(id: InboxItemId): Boolean = inboxService.reject(id)
 
-    suspend fun readAndDiscardInbox(id: InboxItemId) = inboxService.readAndDiscard(id)
+    suspend fun readAndDiscardInbox(id: InboxItemId): Boolean = inboxService.readAndDiscard(id)
 
     suspend fun saveInbox(id: InboxItemId): DocumentId = inboxService.save(id)
 
@@ -193,6 +213,7 @@ class AppContainer(
     }
 
     companion object {
+        private val PASS_BUDGET: Duration = Duration.ofMinutes(8)
         val SAMPLE_SOURCE_ID = SourceId("phase3-sample-rss")
         const val SAMPLE_FEED_URL =
             "https://raw.githubusercontent.com/go-0dboy/article_navigator/ce7432a3bb6bfec6aa3ce264c89f6add49484379/docs/device-test-feed.xml"

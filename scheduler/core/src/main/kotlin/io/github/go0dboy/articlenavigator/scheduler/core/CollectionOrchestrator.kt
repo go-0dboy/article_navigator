@@ -11,6 +11,7 @@ import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -19,7 +20,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
-data class CollectionRunContext(val isUnmeteredNetwork: Boolean)
+data class CollectionRunContext(
+    val isUnmeteredNetwork: Boolean,
+    /** Optional absolute pass deadline shared with downstream ingestion. */
+    val deadline: Instant? = null,
+)
 
 sealed interface SourceCollectionResult {
     val sourceId: SourceId
@@ -30,10 +35,14 @@ sealed interface SourceCollectionResult {
 
 enum class SkipReason { REQUIRES_UNMETERED_NETWORK, ALREADY_CLAIMED, STALE_RESULT }
 
-data class CollectionRunReport(val results: List<SourceCollectionResult>) {
+data class CollectionRunReport(
+    val results: List<SourceCollectionResult>,
+    val budgetExhausted: Boolean = false,
+) {
     val successes: Int get() = results.count { it is SourceCollectionResult.Success }
     val failures: Int get() = results.count { it is SourceCollectionResult.Failure }
     val skipped: Int get() = results.count { it is SourceCollectionResult.Skipped }
+    val discoveredEntries: Int get() = results.filterIsInstance<SourceCollectionResult.Success>().sumOf { it.discoveredCount }
 }
 
 class SourceAdapterRegistry(adapters: List<SourceAdapter>) {
@@ -73,14 +82,39 @@ class CollectionOrchestrator(
 
     suspend fun run(context: CollectionRunContext): CollectionRunReport = coroutineScope {
         val startedAt = clock.instant()
-        val deadline = startedAt.plus(maxRunDuration)
-        val due = sourceRepository.findDue(startedAt, maxSourcesPerRun)
-        val results = mutableListOf<SourceCollectionResult>()
-        for (batch in due.chunked(maxParallelism)) {
-            if (!clock.instant().isBefore(deadline)) break
-            results += batch.map { source -> async { collectOne(source, context) } }.awaitAll()
+        val localDeadline = startedAt.plus(maxRunDuration)
+        val deadline = context.deadline?.takeIf { it < localDeadline } ?: localDeadline
+
+        // Network eligibility is deliberately applied before maxSourcesPerRun. Otherwise a queue
+        // headed by unmetered-only sources could permanently starve later metered-eligible sources.
+        val allDue = sourceRepository.findDue(startedAt)
+        val blocked = if (context.isUnmeteredNetwork) {
+            emptyList()
+        } else {
+            allDue.filter { it.pollPolicy.requiresUnmeteredNetwork }
         }
-        CollectionRunReport(results)
+        val eligible = allDue.filter { context.isUnmeteredNetwork || !it.pollPolicy.requiresUnmeteredNetwork }
+        val due = eligible.take(maxSourcesPerRun)
+
+        val results = blocked.mapTo(mutableListOf<SourceCollectionResult>()) {
+            SourceCollectionResult.Skipped(it.id, SkipReason.REQUIRES_UNMETERED_NETWORK)
+        }
+        var processedEligible = 0
+        // Hitting the per-pass source cap is also budget exhaustion: remaining due sources stay
+        // persisted and WorkManager can schedule a continuation instead of waiting for the next
+        // periodic interval.
+        var budgetExhausted = eligible.size > due.size
+        for (batch in due.chunked(maxParallelism)) {
+            if (!clock.instant().isBefore(deadline)) {
+                budgetExhausted = processedEligible < due.size || budgetExhausted
+                break
+            }
+            val batchResults = batch.map { source -> async { collectOne(source, context) } }.awaitAll()
+            results += batchResults
+            processedEligible += batch.size
+        }
+        if (processedEligible < due.size) budgetExhausted = true
+        CollectionRunReport(results, budgetExhausted)
     }
 
     private suspend fun collectOne(candidate: Source, context: CollectionRunContext): SourceCollectionResult {
@@ -152,8 +186,6 @@ class CollectionOrchestrator(
     }
 
     private suspend fun staleResult(lease: SourceCollectionLease): SourceCollectionResult {
-        // If the token is still ours (for example settings changed or the lease merely expired),
-        // release it immediately. If another run already owns the source, token matching makes this a no-op.
         releaseBestEffort(lease)
         return SourceCollectionResult.Skipped(lease.source.id, SkipReason.STALE_RESULT)
     }
