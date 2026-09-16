@@ -27,6 +27,7 @@ abstract class ArticleNavigatorDatabase : RoomDatabase() {
     abstract fun collectionStateDao(): CollectionStateDao
     abstract fun collectionDao(): CollectionDao
     abstract fun ingestionDao(): IngestionDao
+    abstract fun articleProcessingDao(): ArticleProcessingDao
     abstract fun inboxDao(): InboxDao
     abstract fun documentDao(): DocumentDao
 }
