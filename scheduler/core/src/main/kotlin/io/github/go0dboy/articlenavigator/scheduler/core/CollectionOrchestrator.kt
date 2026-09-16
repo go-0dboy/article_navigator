@@ -93,26 +93,27 @@ class CollectionOrchestrator(
         } else {
             allDue.filter { it.pollPolicy.requiresUnmeteredNetwork }
         }
-        val due = allDue.asSequence()
-            .filter { context.isUnmeteredNetwork || !it.pollPolicy.requiresUnmeteredNetwork }
-            .take(maxSourcesPerRun)
-            .toList()
+        val eligible = allDue.filter { context.isUnmeteredNetwork || !it.pollPolicy.requiresUnmeteredNetwork }
+        val due = eligible.take(maxSourcesPerRun)
 
         val results = blocked.mapTo(mutableListOf<SourceCollectionResult>()) {
             SourceCollectionResult.Skipped(it.id, SkipReason.REQUIRES_UNMETERED_NETWORK)
         }
         var processedEligible = 0
-        var budgetExhausted = false
+        // Hitting the per-pass source cap is also budget exhaustion: remaining due sources stay
+        // persisted and WorkManager can schedule a continuation instead of waiting for the next
+        // periodic interval.
+        var budgetExhausted = eligible.size > due.size
         for (batch in due.chunked(maxParallelism)) {
             if (!clock.instant().isBefore(deadline)) {
-                budgetExhausted = processedEligible < due.size
+                budgetExhausted = processedEligible < due.size || budgetExhausted
                 break
             }
             val batchResults = batch.map { source -> async { collectOne(source, context) } }.awaitAll()
             results += batchResults
             processedEligible += batch.size
         }
-        if (!budgetExhausted && processedEligible < due.size) budgetExhausted = true
+        if (processedEligible < due.size) budgetExhausted = true
         CollectionRunReport(results, budgetExhausted)
     }
 
