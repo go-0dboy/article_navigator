@@ -162,12 +162,17 @@ class LibraryReadIntegrationTest {
     }
 
     @Test
-    fun revisionInvalidatesWhenExistingDocumentChangesWithoutCountChange() = runBlocking {
+    fun revisionInvalidatesWhenTransactionalSaveUpdatesExistingDocumentWithoutCountChange() = runBlocking {
         val source = source("source-a", "Source")
         sources.upsert(source)
         val document = savedDocument("doc-update", now, "Original body")
-        persist(document, source, provenance(document, source, document.canonicalUrl, now.minusSeconds(1)))
+        persist(document, source, provenance(document, source, document.canonicalUrl, now.minusSeconds(60)))
         assertEquals(1, library.observeSavedCount().first())
+
+        val updateDiscovery = discovery("update-discovery", source, document.canonicalUrl)
+        ingestion.upsertDiscovered(updateDiscovery)
+        val updateInbox = inboxItem("update-inbox", document.canonicalUrl, "Updated body")
+        inbox.put(updateInbox, origin(updateInbox, updateDiscovery, source))
 
         val firstEmission = CompletableDeferred<Long>()
         val secondEmission = CompletableDeferred<Long>()
@@ -183,26 +188,20 @@ class LibraryReadIntegrationTest {
         }
 
         val firstRevision = withTimeout(5_000) { firstEmission.await() }
-
-        database.documentDao().upsert(
-            document.copy(
-                title = "Updated title",
-                normalizedText = "Updated body",
-                contentHash = "updated-hash",
-                updatedAt = now.plusSeconds(1),
-            ).toEntity(),
-        )
+        val savedId = inbox.saveCurrent(updateInbox.id, now.plusSeconds(1), "ignored-save-time-parser")
+        assertEquals(document.id, savedId)
 
         val secondRevision = withTimeout(5_000) { secondEmission.await() }
         collector.join()
 
-        // The scalar value is intentionally count-based, but Room must still re-emit it when an
-        // observed table is invalidated by an in-place document update.
-        assertEquals(firstRevision, secondRevision)
         assertEquals(1, library.observeSavedCount().first())
         val updated = library.loadPage(null, 10).single()
-        assertEquals("Updated title", updated.title)
+        assertEquals(updateInbox.title, updated.title)
         assertEquals("Updated body", updated.snippet)
+        assertEquals(2, knowledge.versions(document.id).size)
+        // Revision is an invalidation signal, not a monotonically increasing domain value. A table
+        // change must trigger a second emission even if the scalar value happens to be unchanged.
+        assertEquals(firstRevision, secondRevision)
     }
 
     private suspend fun persist(document: Document, source: Source, provenance: DocumentProvenance) {
