@@ -77,14 +77,16 @@ class CollectionWorkSchedulerTest {
 
         assertNotEquals(firstId, secondId)
         val manager = WorkManager.getInstance(context)
-        val firstInfo = checkNotNull(manager.getWorkInfoById(firstId).get())
+        val firstInfo = manager.getWorkInfoById(firstId).get()
         val secondInfo = checkNotNull(manager.getWorkInfoById(secondId).get())
-        assertEquals(WorkInfo.State.CANCELLED, firstInfo.state)
+
+        // REPLACE cancels and may immediately prune the predecessor from WorkManager's DB.
+        // Either terminal representation proves the first request is no longer runnable.
+        assertTrue(firstInfo == null || firstInfo.state == WorkInfo.State.CANCELLED)
         assertEquals(WorkInfo.State.ENQUEUED, secondInfo.state)
-        assertEquals(
-            secondId,
-            manager.getWorkInfosForUniqueWork(CollectionWorkScheduler.IMMEDIATE_WORK_NAME).get().single().id,
-        )
+        val current = manager.getWorkInfosForUniqueWork(CollectionWorkScheduler.IMMEDIATE_WORK_NAME).get()
+        assertEquals(1, current.size)
+        assertEquals(secondId, current.single().id)
     }
 
     @Test
