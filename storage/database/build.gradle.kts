@@ -16,6 +16,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
+    sourceSets {
+        getByName("test").resources.srcDir("schemas")
+    }
 }
 
 room3 {
@@ -50,4 +58,6 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.room3.testing)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.robolectric)
 }
