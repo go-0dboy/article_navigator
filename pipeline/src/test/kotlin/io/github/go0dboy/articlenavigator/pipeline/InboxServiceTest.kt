@@ -2,22 +2,22 @@ package io.github.go0dboy.articlenavigator.pipeline
 
 import io.github.go0dboy.articlenavigator.core.data.InboxRepository
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
-import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
 import io.github.go0dboy.articlenavigator.core.model.Document
+import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.DocumentProvenance
 import io.github.go0dboy.articlenavigator.core.model.DocumentVersion
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
 import io.github.go0dboy.articlenavigator.core.model.SeenFingerprint
-import io.github.go0dboy.articlenavigator.core.model.SourceId
-import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InboxServiceTest {
@@ -34,101 +34,63 @@ class InboxServiceTest {
     )
 
     @Test
-    fun `save preserves every ingestion-time origin snapshot and creates saved fingerprints`() = runTest {
-        val repository = CapturingInboxRepository(item).apply {
-            storedOrigins += origin(
-                source = "source-a",
-                discovery = "discovery-a",
-                url = "https://feed-a.test/article",
-                fetchedAt = now.minusSeconds(30),
-                sourceName = "Feed A at ingestion",
-                sourceUrl = "https://feed-a.test/feed.xml",
-            )
-            storedOrigins += origin(
-                source = "source-b",
-                discovery = "discovery-b",
-                url = "https://feed-b.test/article",
-                fetchedAt = now.minusSeconds(10),
-                sourceName = "Feed B at ingestion",
-                sourceUrl = "https://feed-b.test/feed.xml",
-            )
-        }
+    fun `save delegates one atomic lifecycle operation with current time and parser version`() = runTest {
+        val expectedDocument = DocumentId("doc-existing-or-new")
+        val repository = CapturingInboxRepository(item).apply { saveResult = expectedDocument }
         val service = InboxService(repository, clock)
 
-        val documentId = service.save(item.id)
+        val actual = service.save(item.id)
 
-        val saved = repository.saved
-        assertNotNull(saved)
-        saved!!
-        assertEquals(documentId, saved.document.id)
-        assertEquals(ContentDisposition.SAVED, saved.document.disposition)
-        assertEquals(item.canonicalUrl, saved.document.canonicalUrl)
-        assertEquals(item.contentHash, saved.document.contentHash)
-        assertEquals(item.normalizedText, saved.version.normalizedText)
-        assertEquals(now.minusSeconds(10), saved.version.fetchedAt)
-        assertEquals(2, saved.provenances.size)
-        assertEquals(setOf(SourceId("source-a"), SourceId("source-b")), saved.provenances.map { it.sourceId }.toSet())
-        assertEquals(
-            setOf("Feed A at ingestion", "Feed B at ingestion"),
-            saved.provenances.map { it.sourceNameSnapshot }.toSet(),
-        )
-        assertEquals(
-            setOf("https://feed-a.test/feed.xml", "https://feed-b.test/feed.xml"),
-            saved.provenances.map { it.sourceUrlSnapshot }.toSet(),
-        )
-        assertEquals(setOf(SourceType.RSS.name), saved.provenances.map { it.sourceTypeSnapshot }.toSet())
-        assertEquals(2, saved.fingerprints.size)
-        assertEquals(setOf(ContentDisposition.SAVED), saved.fingerprints.map { it.disposition }.toSet())
-        assertEquals(setOf(SourceId("source-a"), SourceId("source-b")), saved.fingerprints.map { it.sourceId }.toSet())
+        assertEquals(expectedDocument, actual)
+        assertEquals(SaveCurrentCall(item.id, now, InboxService.PARSER_VERSION), repository.saveCurrentCall)
     }
 
     @Test
-    fun `reject records rejection for every origin without saving document`() = runTest {
-        val repository = CapturingInboxRepository(item).apply {
-            storedOrigins += origin("source-a", "discovery-a", "https://feed-a.test/article", now.minusSeconds(20))
-            storedOrigins += origin("source-b", "discovery-b", "https://feed-b.test/article", now.minusSeconds(10))
-        }
+    fun `save does not report success when inbox was already consumed`() = runTest {
+        val repository = CapturingInboxRepository(item).apply { saveResult = null }
         val service = InboxService(repository, clock)
 
-        service.reject(item.id)
-
-        val discarded = repository.discarded
-        assertNotNull(discarded)
-        discarded!!
-        assertEquals(ContentDisposition.REJECTED, discarded.disposition)
-        assertEquals(2, discarded.fingerprints.size)
-        assertEquals(setOf(ContentDisposition.REJECTED), discarded.fingerprints.map { it.disposition }.toSet())
-        assertEquals(null, repository.saved)
+        assertThrows(NoSuchElementException::class.java) {
+            kotlinx.coroutines.runBlocking { service.save(item.id) }
+        }
+        assertEquals(SaveCurrentCall(item.id, now, InboxService.PARSER_VERSION), repository.saveCurrentCall)
     }
 
-    private fun origin(
-        source: String,
-        discovery: String,
-        url: String,
-        fetchedAt: Instant,
-        sourceName: String = "Source snapshot",
-        sourceUrl: String = "https://source.test/feed.xml",
-    ) = InboxOrigin(
-        inboxItemId = item.id,
-        discoveredItemId = DiscoveredItemId(discovery),
-        sourceId = SourceId(source),
-        discoveredUrl = url,
-        resolvedUrl = url,
-        canonicalUrl = url,
-        discoveredAt = fetchedAt.minusSeconds(5),
-        fetchedAt = fetchedAt,
-        sourceNameSnapshot = sourceName,
-        sourceUrlSnapshot = sourceUrl,
-        sourceTypeSnapshot = SourceType.RSS.name,
-    )
+    @Test
+    fun `reject and read-discard surface already handled result`() = runTest {
+        val repository = CapturingInboxRepository(item)
+        val service = InboxService(repository, clock)
+
+        repository.discardResult = true
+        assertTrue(service.reject(item.id))
+        assertEquals(DiscardCurrentCall(item.id, ContentDisposition.REJECTED, now), repository.discardCurrentCall)
+
+        repository.discardResult = false
+        assertFalse(service.readAndDiscard(item.id))
+        assertEquals(
+            DiscardCurrentCall(item.id, ContentDisposition.READ_AND_DISCARDED, now),
+            repository.discardCurrentCall,
+        )
+    }
 }
 
 private class CapturingInboxRepository(
     private val item: InboxItem,
 ) : InboxRepository {
-    val storedOrigins = mutableListOf<InboxOrigin>()
-    var saved: SavedCall? = null
-    var discarded: DiscardCall? = null
+    var saveResult: DocumentId? = null
+    var discardResult: Boolean = false
+    var saveCurrentCall: SaveCurrentCall? = null
+    var discardCurrentCall: DiscardCurrentCall? = null
+
+    override suspend fun saveCurrent(id: InboxItemId, at: Instant, parserVersion: String): DocumentId? {
+        saveCurrentCall = SaveCurrentCall(id, at, parserVersion)
+        return saveResult
+    }
+
+    override suspend fun discardCurrent(id: InboxItemId, disposition: ContentDisposition, at: Instant): Boolean {
+        discardCurrentCall = DiscardCurrentCall(id, disposition, at)
+        return discardResult
+    }
 
     override suspend fun put(item: InboxItem, origin: InboxOrigin) = error("not used")
     override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) = error("not used")
@@ -138,38 +100,29 @@ private class CapturingInboxRepository(
         item.takeIf { it.canonicalUrl == canonicalUrl }
     override suspend fun findByContentHash(contentHash: String): InboxItem? =
         item.takeIf { it.contentHash == contentHash }
-    override suspend fun origins(id: InboxItemId): List<InboxOrigin> =
-        if (id == item.id) storedOrigins.toList() else emptyList()
-
+    override suspend fun origins(id: InboxItemId): List<InboxOrigin> = emptyList()
     override suspend fun discard(
         id: InboxItemId,
         disposition: ContentDisposition,
         fingerprints: List<SeenFingerprint>,
-    ) {
-        discarded = DiscardCall(id, disposition, fingerprints)
-    }
-
+    ) = error("legacy discard must not be used by InboxService")
     override suspend fun save(
         id: InboxItemId,
         document: Document,
         version: DocumentVersion,
         provenances: List<DocumentProvenance>,
         fingerprints: List<SeenFingerprint>,
-    ) {
-        saved = SavedCall(id, document, version, provenances, fingerprints)
-    }
+    ) = error("legacy save must not be used by InboxService")
 }
 
-private data class SavedCall(
+private data class SaveCurrentCall(
     val id: InboxItemId,
-    val document: Document,
-    val version: DocumentVersion,
-    val provenances: List<DocumentProvenance>,
-    val fingerprints: List<SeenFingerprint>,
+    val at: Instant,
+    val parserVersion: String,
 )
 
-private data class DiscardCall(
+private data class DiscardCurrentCall(
     val id: InboxItemId,
     val disposition: ContentDisposition,
-    val fingerprints: List<SeenFingerprint>,
+    val at: Instant,
 )
