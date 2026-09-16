@@ -7,6 +7,7 @@ import io.github.go0dboy.articlenavigator.core.data.CollectionStateRepository
 import io.github.go0dboy.articlenavigator.core.data.InboxRepository
 import io.github.go0dboy.articlenavigator.core.data.IngestionFinalizeOutcome
 import io.github.go0dboy.articlenavigator.core.data.IngestionRepository
+import io.github.go0dboy.articlenavigator.core.data.IngestionSeedRepository
 import io.github.go0dboy.articlenavigator.core.data.KnowledgeRepository
 import io.github.go0dboy.articlenavigator.core.data.SourceCollectionLease
 import io.github.go0dboy.articlenavigator.core.data.SourceRepository
@@ -135,12 +136,8 @@ class RoomCollectionRepository(private val dao: CollectionDao) : CollectionRepos
 
 class RoomIngestionRepository(
     private val dao: IngestionDao,
-    private val processingDao: ArticleProcessingDao? = null,
-) : IngestionRepository {
-    private fun processing(): ArticleProcessingDao = checkNotNull(processingDao) {
-        "ArticleProcessingDao is required for runtime ingestion ownership operations"
-    }
-
+    private val processingDao: ArticleProcessingDao,
+) : IngestionRepository, IngestionSeedRepository {
     override suspend fun upsertDiscovered(item: DiscoveredItem) = dao.upsertDiscovered(item.toEntity())
     override suspend fun findDiscoveredById(id: DiscoveredItemId): DiscoveredItem? = dao.findDiscoveredById(id.value)?.toDomain()
     override suspend fun findDiscovered(sourceId: SourceId, url: String): DiscoveredItem? = dao.findDiscovered(sourceId.value, url)?.toDomain()
@@ -152,7 +149,7 @@ class RoomIngestionRepository(
         now: Instant,
         leaseExpiresAt: Instant,
         isUnmeteredNetwork: Boolean,
-    ): ArticleProcessingLease? = processing().tryClaimNext(
+    ): ArticleProcessingLease? = processingDao.tryClaimNext(
         runToken = runToken,
         nowEpochMillis = now.toEpochMilli(),
         leaseExpiresAtEpochMillis = leaseExpiresAt.toEpochMilli(),
@@ -160,14 +157,14 @@ class RoomIngestionRepository(
     )?.let { ArticleProcessingLease(it.toDomain(), runToken, leaseExpiresAt) }
 
     override suspend fun releaseProcessing(lease: ArticleProcessingLease) {
-        processing().release(lease.item.id.value, lease.runToken)
+        processingDao.release(lease.item.id.value, lease.runToken)
     }
 
     override suspend fun storeRawContent(
         lease: ArticleProcessingLease,
         content: RawContent,
         at: Instant,
-    ): Boolean = processing().storeRawOwned(
+    ): Boolean = processingDao.storeRawOwned(
         id = lease.item.id.value,
         runToken = lease.runToken,
         atEpochMillis = at.toEpochMilli(),
@@ -175,7 +172,7 @@ class RoomIngestionRepository(
     )
 
     override suspend fun loadRawContent(lease: ArticleProcessingLease): RawContent? =
-        processing().raw(lease.item.id.value)?.toDomain()
+        processingDao.raw(lease.item.id.value)?.toDomain()
 
     override suspend fun markFetched(
         lease: ArticleProcessingLease,
@@ -183,7 +180,7 @@ class RoomIngestionRepository(
         resolvedUrl: String?,
         contentHash: String,
         at: Instant,
-    ): Boolean = processing().markFetchedOwned(
+    ): Boolean = processingDao.markFetchedOwned(
         id = lease.item.id.value,
         runToken = lease.runToken,
         atEpochMillis = at.toEpochMilli(),
@@ -198,7 +195,7 @@ class RoomIngestionRepository(
         nextProcessingAt: Instant,
         lastProcessingError: String,
         at: Instant,
-    ): Boolean = processing().markFailedOwned(
+    ): Boolean = processingDao.markFailedOwned(
         id = lease.item.id.value,
         runToken = lease.runToken,
         atEpochMillis = at.toEpochMilli(),
@@ -212,7 +209,7 @@ class RoomIngestionRepository(
         canonicalUrl: String?,
         lastProcessingError: String,
         at: Instant,
-    ): Boolean = processing().skipOwned(
+    ): Boolean = processingDao.skipOwned(
         id = lease.item.id.value,
         runToken = lease.runToken,
         atEpochMillis = at.toEpochMilli(),
@@ -226,7 +223,7 @@ class RoomIngestionRepository(
         origin: InboxOrigin,
         canonicalUrlHash: String,
         completedAt: Instant,
-    ): IngestionFinalizeOutcome = processing().finalizeSuccess(
+    ): IngestionFinalizeOutcome = processingDao.finalizeSuccess(
         id = lease.item.id.value,
         runToken = lease.runToken,
         atEpochMillis = completedAt.toEpochMilli(),
@@ -235,7 +232,7 @@ class RoomIngestionRepository(
         canonicalUrlHash = canonicalUrlHash,
     )
 
-    /** Legacy transitions are terminal-state guarded; runtime uses lease-aware methods above. */
+    /** Explicit maintenance transitions; runtime ingestion never calls these id-only methods. */
     override suspend fun markProcessed(id: DiscoveredItemId, canonicalUrl: String?): Boolean {
         val current = dao.findDiscoveredById(id.value)?.toDomain() ?: return false
         if (current.status == DiscoveryStatus.PROCESSED || current.status == DiscoveryStatus.SKIPPED) return false
@@ -286,12 +283,8 @@ class RoomIngestionRepository(
 
 class RoomInboxRepository(
     private val dao: InboxDao,
-    private val lifecycleDao: InboxLifecycleDao? = null,
+    private val lifecycleDao: InboxLifecycleDao,
 ) : InboxRepository {
-    private fun lifecycle(): InboxLifecycleDao = checkNotNull(lifecycleDao) {
-        "InboxLifecycleDao is required for runtime Inbox user actions"
-    }
-
     override suspend fun put(item: InboxItem, origin: InboxOrigin) = dao.put(item.toEntity(), origin.toEntity())
     override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) = dao.attachOrigin(itemId.value, origin.toEntity())
     override suspend fun listPending(limit: Int): List<InboxItem> = dao.listPending(limit).map { it.toDomain() }
@@ -301,7 +294,7 @@ class RoomInboxRepository(
     override suspend fun origins(id: InboxItemId): List<InboxOrigin> = dao.origins(id.value).map { it.toDomain() }
 
     override suspend fun saveCurrent(id: InboxItemId, at: Instant, parserVersion: String): DocumentId? =
-        lifecycle().saveCurrent(id.value, at.toEpochMilli(), parserVersion)?.let(::DocumentId)
+        lifecycleDao.saveCurrent(id.value, at.toEpochMilli(), parserVersion)?.let(::DocumentId)
 
     override suspend fun discardCurrent(
         id: InboxItemId,
@@ -309,7 +302,7 @@ class RoomInboxRepository(
         at: Instant,
     ): Boolean {
         require(disposition == ContentDisposition.REJECTED || disposition == ContentDisposition.READ_AND_DISCARDED)
-        return lifecycle().discardCurrent(id.value, disposition.name, at.toEpochMilli())
+        return lifecycleDao.discardCurrent(id.value, disposition.name, at.toEpochMilli())
     }
 
     override suspend fun discard(
