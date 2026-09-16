@@ -1,188 +1,188 @@
 # Development route
 
-This route is intentionally architecture-preserving: each phase adds a vertical capability without invalidating earlier storage and module boundaries.
+This route is architecture-preserving: each stage adds one product capability without weakening canonical storage, processing ownership, transactional Inbox actions or historical provenance.
 
-## Quality gate for every phase
+## Quality gate for every stage
 
-No phase is complete until all of the following are true:
+A stage is not complete until all applicable checks are true:
 
 - new production behavior has automated tests;
-- regressions for defects fixed during the phase are added as tests;
-- persistence changes include migration/schema tests where applicable;
-- collectors include deterministic fixture/contract tests and do not rely on live Internet for unit tests;
-- Android-specific scheduling/UI behavior receives instrumentation or Robolectric tests where unit tests are insufficient;
-- `./gradlew test` passes in GitHub Actions;
-- `./gradlew lint` passes in GitHub Actions;
-- `./gradlew assembleDebug` passes and publishes an installable APK artifact;
-- the phase exit criteria below are demonstrated by tests or a reproducible manual acceptance scenario.
+- every reproducible defect fixed in the stage has a regression test;
+- schema changes have a new migration and a newly exported Room schema; released schema files are not edited;
+- migration compatibility is tested from supported historical versions;
+- collectors/parser tests are deterministic and do not require live Internet;
+- Android UI/background behavior has unit, Robolectric or WorkManager tests where appropriate;
+- `./gradlew test --stacktrace` passes in GitHub Actions;
+- `./gradlew lint --stacktrace` passes in GitHub Actions;
+- `./gradlew assembleDebug --stacktrace` passes and the APK artifact is published;
+- Room schema consistency and wrapper/toolchain gates remain enabled;
+- exit criteria are demonstrated by tests or a reproducible device scenario.
 
-A PR with failing or missing required tests is not considered ready to merge.
+No failing or bypassed quality gate is accepted for merge.
 
-## Test releases
+## Completed foundation
 
-- **Technical test APK:** produced by Phase 0 and continuously rebuilt by CI. Its purpose is reproducible Git/CI build and installation on a real Android device.
-- **First functional test release:** after Phase 4. It must support the complete path: configure RSS/Atom source -> collect entries -> show Inbox -> open item -> reject/read-and-discard/save.
-- Later phases add search, semantic retrieval, relevance filtering and optional AI without changing the canonical storage contract.
+### Repository, storage and collector foundation — COMPLETE
 
-## Phase 0 — Repository and build foundation — COMPLETE
+Implemented across the earlier phases:
 
-- multi-module Gradle project;
-- Android application shell;
-- stable Android toolchain pinned in version catalog;
-- pure Kotlin domain/collector modules;
-- canonical Room 3 schema foundation;
-- GitHub Actions build, test, lint and APK artifact;
-- foundation unit tests;
-- architecture decisions and roadmap in Git.
+- reproducible multi-module Android/Kotlin build;
+- Room 3 canonical database with committed schema history;
+- source/source-cursor/discovery/document/provenance persistence;
+- RSS/Atom collection and deterministic fixture tests;
+- OkHttp transport and conditional collection state;
+- WorkManager Android wake-up path and persisted scheduling state;
+- discovery/fetch/normalization pipeline;
+- Inbox with Save / Reject / Read-and-discard;
+- canonical URL/content deduplication;
+- compact seen fingerprints.
 
-**Exit:** a fresh checkout passes tests/lint, builds in CI and produces a debug APK artifact.
+### Reliability hardening — COMPLETE
 
-## Phase 1 — Persistence contracts and migrations — COMPLETE
+The reliability stage is the baseline for all future product work:
 
-- repository interfaces over canonical entities;
-- full source/source-cursor/discovery/document persistence;
-- schema export checked into Git;
-- Room/JVM integration-test foundation for future migrations;
-- transaction boundaries for item lifecycle transitions;
-- document identity separated from provenance so one document may be discovered through multiple sources.
+- persisted source-collection ownership;
+- persisted article-processing ownership;
+- stale owner/version writes rejected;
+- transactional discovery/source commits;
+- transactional Inbox Save/Reject/Read-and-discard using current origins;
+- durable provenance snapshots with restrictive source relationships;
+- exact raw response bytes + Content-Type + final redirect URL retained for crash recovery while raw is valid;
+- file-backed close/reopen recovery tests;
+- bounded concurrency and article network-policy filtering;
+- shared collection+ingestion execution deadline;
+- infrastructure errors remain distinct from ordinary article failures;
+- historical v4 compatibility and complete migration-chain tests.
 
-**Tests:** DAO/repository tests, real in-memory SQLite integration tests, uniqueness/idempotency foundations, transaction tests and committed schema gate.
+Scheduler continuation/backoff refinement is intentionally tracked separately from product UI work because the current worker uses one WorkManager `runAttemptCount` for successful continuation and infrastructure retry.
 
-**Exit:** source and document lifecycle is represented durably and schema changes are guarded by CI.
+## Current stage — Saved Library and offline reading — IN VALIDATION (PR #17)
 
-## Phase 2 — Collector framework and RSS/Atom — IN PROGRESS
+Product goal: **Save a material, see it in Library, read the saved text without network access, and understand where it came from.**
 
-- HTTP transport abstraction with JVM/Android-compatible OkHttp implementation;
-- conditional requests using ETag/Last-Modified;
-- one RSS/Atom adapter with format auto-detection;
-- conservative canonical URL normalization;
-- deterministic discovery identities so persistence remains idempotent;
-- collector fixtures and contract tests;
-- explicit retry/backoff/rate-limit policy objects for the Phase 3 scheduler.
+Implemented in the current PR:
 
-**Tests:** RSS/Atom fixtures, malformed feeds, conditional HTTP, duplicate discovery identity, retry/backoff, URL canonicalization and HTTP transport tests. No unit test depends on live Internet.
+- strict content decoding with precedence `BOM -> HTTP charset -> document metadata -> UTF-8`;
+- exact Cyrillic/Windows-1251/BOM/unknown/malformed decoding regression fixtures;
+- parser identity captured with extracted Inbox text;
+- schema v6 migration so existing v5 pending Inbox rows keep a conservative parser-v1 identity;
+- saved-library read model with title, saved date, short snippet and source summary;
+- stable keyset paging and exact independent count;
+- full local document detail loaded only when opened;
+- all saved provenance snapshots displayed from historical data;
+- offline reading independent of original-site availability;
+- external URLs opened only on explicit user action;
+- Inbox and Library Flow/ViewModel/lifecycle-aware observation;
+- removal of the two-second MainActivity storage polling loop;
+- Save -> saved-document navigation;
+- restart/file-backed tests for raw extraction, saved content and provenance;
+- background invalidation and paging ViewModel tests.
 
-**Exit:** configured feeds can be polled repeatably, conditional HTTP is preserved, and repeated feed contents resolve to the same discovery identities.
+Explicitly out of scope for this stage:
 
-## Phase 3 — Android collection scheduler
-
-- persisted `nextCheckAt` scheduler;
-- one WorkManager wake-up path;
-- network/battery constraints;
-- bounded parallelism and per-source failure isolation;
-- collection diagnostics.
-
-**Tests:** scheduler selection/order, retry timing, source failure isolation and WorkManager integration tests.
-
-**Exit:** feeds update automatically under Android background restrictions.
-
-## Phase 4 — Ingestion and Inbox
-
-- fetch and content extraction pipeline;
-- deduplication by canonical URL and content hash;
-- normalized text storage;
-- Inbox UI;
-- reject, read-and-discard, save transitions;
-- compact `SeenFingerprint` retention.
-
-**Tests:** extraction fixtures, deduplication/idempotency, state-transition tests, repository integration tests and Inbox UI tests.
-
-**Exit:** automatic discovery reaches the user and unwanted items do not pollute permanent knowledge.
-
-## Phase 5 — Durable Knowledge library
-
-- saved-document reader;
-- source provenance UI;
+- document deletion;
+- text editing;
+- complex version-management UI;
 - notes and tags;
-- document update/version policy;
-- export and backup format.
+- cloud synchronization;
+- semantic search, embeddings or LLM functions;
+- scheduler retry/backoff redesign.
 
-**Tests:** provenance preservation, versioning, notes/tags, export/import round-trip and backup compatibility tests.
+**Exit:** final PR HEAD passes tests/schema/lint/assemble/APK gates and the device scenario proves Save -> Library -> offline reopen -> provenance.
 
-**Exit:** a saved item remains useful and traceable years later, independent of the original website.
+## Next stage 1 — Exact offline full-text search
 
-## Phase 6 — Exact search
+Implement exact search before semantic retrieval:
 
-- Room 3 FTS5 tables;
-- indexing pipeline;
-- phrase/exact search and metadata filters;
-- ranking tests.
+- Room/SQLite FTS tables as derived indexes;
+- indexing of saved title/body and appropriate metadata;
+- exact terms, quoted phrases and identifiers;
+- deterministic ordering and metadata filters;
+- rebuild command/path from canonical saved records;
+- no dependency on network or an AI provider.
 
-**Tests:** exact terms, phrases, identifiers, filters, ranking fixtures and index rebuild tests.
+**Tests:** exact-term fixtures, phrase/identifier cases, equal-score ordering, filters, index update after Save, and complete index rebuild equivalence.
 
-**Exit:** titles, identifiers, phrases, notes and body text are searchable offline.
+**Exit:** every saved text is discoverable offline through deterministic full-text search.
 
-## Phase 7 — Semantic and hybrid search
+## Next stage 2 — Export and restore
 
-- `EmbeddingProvider` interface;
-- on-device embedding implementation;
-- chunking with version metadata;
-- replaceable vector index;
-- hybrid rank fusion with FTS.
+Create a portable archive path independent of a proprietary service:
 
-**Tests:** chunk stability/versioning, vector-index rebuild, semantic retrieval benchmark fixtures and hybrid ranking tests.
+- documented export format for saved documents, versions and provenance;
+- explicit format/schema version;
+- restore into a clean installation;
+- duplicate/idempotency policy;
+- validation before replacing/adding canonical data;
+- no loss of parser version or historical Source snapshots.
 
-**Exit:** natural-language queries find conceptually related saved material offline.
+**Tests:** export -> clean database -> restore -> export round-trip with equivalent canonical content/provenance, multiple origins, Unicode/Cyrillic and older supported records.
 
-## Phase 8 — Interest model and relevance filtering
+**Exit:** a user can recover the same saved knowledge/provenance on a clean installation.
 
-- interests with positive/negative examples;
-- relevance scoring before expensive processing;
-- feedback signals from reject/read/save;
-- explainable "why this was shown" metadata.
+## Next stage 3 — Manual save through Android Share
 
-**Tests:** fixed relevance corpus, positive/negative feedback behavior, threshold tests and regression evaluation set.
+Allow explicit capture of a URL sent from a browser or another Android application:
 
-**Exit:** the incoming stream is automatically prioritized for the user.
+- Android Share target for HTTP/HTTPS URLs;
+- canonical validation and deduplication;
+- manual item enters the same ownership-aware fetch/extract/finalisation pipeline instead of a second storage path;
+- user can review/save using the same Inbox/Library model;
+- failures are visible and retryable without duplicate documents.
 
-## Phase 9 — Additional source adapters
+**Tests:** Share intent parsing, invalid/non-http input, duplicate URL/content, offline/failure recovery and end-to-end manual URL -> Inbox -> Save -> Library.
 
-- generic static HTML extraction;
-- explicit site adapters where required;
-- structured REST sources;
-- later: release feeds and other legally/technically appropriate integrations.
+**Exit:** a user can send a link to Article Navigator through Android Share and preserve it through the same reliable pipeline.
 
-**Tests:** each adapter ships with captured fixtures and the shared collector contract suite.
+## Later stages
 
-**Exit:** new source types plug in without changes to the domain or scheduler.
+### Semantic and hybrid retrieval
 
-## Phase 10 — Optional intelligence layer
+Only after exact search is proven:
 
-- `Summarizer`, `Tagger`, `AnswerSynthesizer` interfaces;
-- extractive/local/cloud implementations as available;
-- summaries generated only after cheap relevance filtering;
-- answers always retain citations back to saved source material.
+- replaceable `EmbeddingProvider`;
+- chunk/version metadata;
+- rebuildable vector index;
+- hybrid fusion with exact FTS;
+- retrieval evaluation corpus.
 
-**Tests:** provider contract tests, deterministic fake-provider integration tests and evaluation datasets for non-deterministic providers.
+### Interest/relevance model
 
-**Exit:** AI improves reading/search without becoming a dependency of the archive.
+- explicit interests and positive/negative feedback;
+- cheap relevance scoring before expensive optional processing;
+- explainable reason metadata;
+- regression evaluation corpus.
 
-## Phase 11 — Ask my knowledge
+### Additional source adapters
 
-- retrieve with hybrid search;
-- answer synthesis over selected chunks;
-- source-backed responses;
-- evaluation dataset for retrieval and answer quality.
+- static HTML/manual-page adapters where technically and legally appropriate;
+- structured REST/release feeds;
+- shared collector contract tests for every adapter.
 
-**Tests:** retrieval benchmark, citation/source-grounding checks and answer-quality eval set.
+### Optional intelligence layer
 
-## Phase 12 — Optional cloud collector and multi-device sync
+- summarizer/tagger/answer interfaces only after archive/search fundamentals;
+- local/cloud implementations optional;
+- generated metadata never replaces saved source text;
+- answers retain references to saved material.
 
-- shared collector runtime;
-- outbox/revision protocol;
-- encrypted sync design;
-- conflict handling;
-- cloud remains optional for core local functionality.
+### Optional multi-device sync
 
-**Tests:** outbox delivery/idempotency, conflict fixtures, offline/online transitions and end-to-end sync tests.
+- revision/outbox protocol;
+- encrypted transport design;
+- conflict behavior;
+- local database remains canonical for offline operation.
 
 ## Non-negotiable engineering requirements
 
-- no feature may silently discard provenance;
-- canonical data migrations are tested before release;
+- no feature silently discards provenance;
+- stale processing owners cannot commit;
+- UI cannot bypass transactional Inbox lifecycle methods;
+- canonical migrations are tested before release;
+- historical schema exports are immutable;
 - derived indexes can be deleted and rebuilt;
-- collectors must be idempotent;
-- every phase must add and pass its required automated tests;
-- CI must remain green on every merge;
-- AI-generated metadata never replaces saved source text;
-- user export must remain possible without a proprietary server.
+- collector/discovery processing remains idempotent;
+- saved normalized text remains readable without network access;
+- user export must remain possible without a proprietary server;
+- AI-generated data never becomes the only copy of source-derived text;
+- CI quality gates remain enabled on every merge.
