@@ -22,7 +22,7 @@ android {
     }
 
     sourceSets {
-        getByName("test").resources.srcDir("schemas")
+        getByName("test").assets.srcDir("schemas")
     }
 }
 
