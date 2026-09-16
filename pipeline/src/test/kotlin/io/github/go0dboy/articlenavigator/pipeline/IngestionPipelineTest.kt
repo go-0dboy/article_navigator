@@ -28,6 +28,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -186,6 +187,47 @@ class IngestionPipelineTest {
         assertEquals(1, ingestion.inboxOrigins.getValue(existing.id).size)
         assertEquals(discovered.id, ingestion.inboxOrigins.getValue(existing.id).single().discoveredItemId)
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(discovered.id).status)
+    }
+
+    @Test
+    fun `item cap requests continuation only when another eligible item remains`() = runTest {
+        val first = discovered("https://example.test/first")
+        val second = discovered("https://example.test/second")
+        val ingestion = FakeIngestionRepository(first).apply { items[second.id] = second }
+        val pipeline = pipeline(ingestion) {
+            FetchResult(it, 200, "text/html", "<article>${it.id.value} body</article>".toByteArray())
+        }
+
+        val firstPass = pipeline.processReady(limit = 1)
+
+        assertEquals(1, firstPass.processed)
+        assertTrue(firstPass.budgetExhausted)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(first.id).status)
+        assertEquals(DiscoveryStatus.DISCOVERED, ingestion.items.getValue(second.id).status)
+        assertEquals(null, ingestion.activeLeaseToken)
+
+        val secondPass = pipeline.processReady(limit = 1)
+
+        assertEquals(1, secondPass.processed)
+        assertFalse(secondPass.budgetExhausted)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(second.id).status)
+        assertEquals(null, ingestion.activeLeaseToken)
+    }
+
+    @Test
+    fun `exactly full pass without remaining work does not request continuation`() = runTest {
+        val only = discovered("https://example.test/only")
+        val ingestion = FakeIngestionRepository(only)
+        val pipeline = pipeline(ingestion) {
+            FetchResult(it, 200, "text/html", "<article>Only body</article>".toByteArray())
+        }
+
+        val report = pipeline.processReady(limit = 1)
+
+        assertEquals(1, report.processed)
+        assertFalse(report.budgetExhausted)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(only.id).status)
+        assertEquals(null, ingestion.activeLeaseToken)
     }
 
     private fun pipeline(
