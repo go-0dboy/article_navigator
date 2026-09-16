@@ -243,8 +243,9 @@ private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionReposi
     ): ArticleProcessingLease? {
         if (activeLeaseToken != null && activeLeaseExpiresAt?.isAfter(now) == true) return null
         val candidate = items.values.firstOrNull { item ->
+            val retryAt = item.nextProcessingAt
             item.status == DiscoveryStatus.DISCOVERED || item.status == DiscoveryStatus.FETCHED ||
-                (item.status == DiscoveryStatus.FAILED && (item.nextProcessingAt == null || !item.nextProcessingAt.isAfter(now)))
+                (item.status == DiscoveryStatus.FAILED && (retryAt == null || !retryAt.isAfter(now)))
         } ?: return null
         activeLeaseToken = runToken
         activeLeaseExpiresAt = leaseExpiresAt
