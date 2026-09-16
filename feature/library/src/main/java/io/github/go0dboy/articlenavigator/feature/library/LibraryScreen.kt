@@ -39,6 +39,7 @@ import java.time.format.DateTimeFormatter
 fun LibraryRoute(
     repository: LibraryRepository,
     initialDocumentId: DocumentId? = null,
+    onSelectedDocumentChanged: (DocumentId?) -> Unit,
     onOpenExternal: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -50,16 +51,22 @@ fun LibraryRoute(
     val model: LibraryViewModel = viewModel(factory = factory)
     val state by model.state.collectAsStateWithLifecycle()
 
+    // The parent owns the saveable selection so Activity recreation and section switches restore
+    // the same logical document. The ViewModel owns loading/observation of that selected document.
     LaunchedEffect(initialDocumentId) {
-        if (initialDocumentId != null) model.openDocument(initialDocumentId)
+        if (initialDocumentId == null) {
+            model.closeDocument()
+        } else {
+            model.openDocument(initialDocumentId)
+        }
     }
 
     LibraryScreen(
         state = state,
         onRetry = model::retry,
         onLoadMore = model::loadMore,
-        onOpenDocument = model::openDocument,
-        onCloseDocument = model::closeDocument,
+        onOpenDocument = { onSelectedDocumentChanged(it) },
+        onCloseDocument = { onSelectedDocumentChanged(null) },
         onOpenExternal = onOpenExternal,
         modifier = modifier,
     )
