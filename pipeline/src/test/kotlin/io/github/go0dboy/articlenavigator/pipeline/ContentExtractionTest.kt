@@ -3,6 +3,7 @@ package io.github.go0dboy.articlenavigator.pipeline
 import io.github.go0dboy.articlenavigator.core.model.ContentFormats
 import java.nio.charset.Charset
 import java.util.Base64
+import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -77,6 +78,7 @@ class ContentExtractionTest {
 
         val result = extractor.extract(html, "text/html; charset=utf-8", "https://example.test/articles/1")
         val safe = checkNotNull(result.structuredContent)
+        val safeDocument = Jsoup.parseBodyFragment(safe)
 
         assertEquals(ContentFormats.SAFE_HTML_V1, result.structuredContentFormat)
         assertTrue(safe.contains("<h2>Section</h2>"))
@@ -86,7 +88,7 @@ class ContentExtractionTest {
         assertTrue(safe.contains("<blockquote>Quote</blockquote>"))
         assertTrue(safe.contains("<ul>"))
         assertTrue(safe.contains("<ol>"))
-        assertTrue(safe.contains("<pre>  val x = 1\n    val y = 2</pre>"))
+        assertEquals("  val x = 1\n    val y = 2", checkNotNull(safeDocument.selectFirst("pre")).wholeText())
         assertTrue(safe.contains("<table>"))
         assertTrue(safe.contains("<figure data-an-image-url=\"https://example.test/image.png\">"))
         assertTrue(safe.contains("<figcaption>Diagram</figcaption>"))
