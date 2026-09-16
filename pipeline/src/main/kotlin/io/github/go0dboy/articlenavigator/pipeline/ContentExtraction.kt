@@ -1,5 +1,8 @@
 package io.github.go0dboy.articlenavigator.pipeline
 
+import io.github.go0dboy.articlenavigator.core.model.ContentFormats
+import io.github.go0dboy.articlenavigator.core.model.ContentParserVersions
+import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.Charset
@@ -8,14 +11,21 @@ import java.nio.charset.IllegalCharsetNameException
 import java.nio.charset.StandardCharsets
 import java.nio.charset.UnsupportedCharsetException
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.safety.Safelist
 
-/** Content after transport-specific bytes have been reduced to durable readable text. */
+/** Content after transport-specific bytes have been reduced to durable readable representations. */
 data class ExtractedContent(
     val title: String?,
     val normalizedText: String,
+    val structuredContentFormat: String?,
+    val structuredContent: String?,
 )
 
-fun interface ContentExtractor {
+/** Every extractor must declare the durable parser identity persisted with the content it produces. */
+interface ContentExtractor {
+    val parserVersion: String
+
     fun extract(body: ByteArray, contentType: String?, baseUri: String): ExtractedContent
 }
 
@@ -26,31 +36,50 @@ fun interface ContentExtractor {
  * 3. HTML/XML in-document charset metadata;
  * 4. UTF-8.
  *
- * This mirrors jsoup's documented BOM/meta/UTF-8 behavior while adding the transport charset that
- * is already persisted with RawContent. All selected charsets are decoded strictly: malformed or
- * unmappable bytes are rejected instead of being replaced with U+FFFD and saved as valid content.
+ * The selected charset is decoded strictly. Unsupported or malformed input is rejected instead of
+ * silently storing replacement characters. Markup is additionally reduced to the passive
+ * `safe-html-v1` subset from ADR 0007; source scripts/forms/embedded active content are never
+ * persisted as executable reading content.
  */
 class DefaultContentExtractor : ContentExtractor {
+    override val parserVersion: String = ContentParserVersions.DEFAULT_EXTRACTOR_V3
+
     override fun extract(body: ByteArray, contentType: String?, baseUri: String): ExtractedContent {
         require(body.isNotEmpty()) { "Fetched body is empty" }
         val mediaType = contentType?.substringBefore(';')?.trim()?.lowercase()
         return when {
-            mediaType == "text/plain" -> ExtractedContent(
-                title = null,
-                normalizedText = normalizeText(decodeText(body, contentType)),
-            )
+            mediaType == "text/plain" -> extractPlainText(body, contentType)
             mediaType == null || mediaType.contains("html") || mediaType.contains("xml") ->
                 extractMarkup(body, contentType, baseUri)
             else -> throw UnsupportedContentTypeException(contentType)
         }.also {
             require(it.normalizedText.isNotBlank()) { "Extracted content is blank" }
+            require(
+                (it.structuredContentFormat == null) == (it.structuredContent == null),
+            ) { "Structured content format and payload must either both exist or both be absent" }
         }
+    }
+
+    /**
+     * Plain text intentionally remains text-only. Its historical identity is SHA-256 of
+     * normalizedText; wrapping it in generated HTML would create a false new content version after
+     * upgrading the extractor even when the readable source bytes did not change.
+     */
+    private fun extractPlainText(body: ByteArray, contentType: String?): ExtractedContent {
+        val normalized = normalizeText(decodeText(body, contentType))
+        return ExtractedContent(
+            title = null,
+            normalizedText = normalized,
+            structuredContentFormat = null,
+            structuredContent = null,
+        )
     }
 
     private fun extractMarkup(body: ByteArray, contentType: String?, baseUri: String): ExtractedContent {
         val decoded = decodeMarkup(body, contentType)
         val document = Jsoup.parse(decoded, baseUri)
-        document.select("script, style, noscript, nav, header, footer, aside, form, svg, canvas, iframe").remove()
+        document.outputSettings().prettyPrint(false)
+        document.select("script, style, noscript, nav, header, footer, aside, form, input, button, svg, canvas, iframe, object, embed").remove()
 
         val root = document.selectFirst("article")
             ?: document.selectFirst("main")
@@ -63,10 +92,47 @@ class DefaultContentExtractor : ContentExtractor {
             ?: document.title().trim().takeIf { it.isNotEmpty() }
             ?: root.selectFirst("h1")?.text()?.trim()?.takeIf { it.isNotEmpty() }
 
+        // Plain text is derived before image placeholders are inserted so search text is not
+        // polluted with UI fallback labels that were not present in the article itself.
+        val normalizedText = normalizeText(root.wholeText())
+
+        // Prevent source-authored inert metadata from masquerading as extractor-owned image data.
+        root.select("[data-an-image-url]").removeAttr("data-an-image-url")
+        root.select("a[href]").forEach { link ->
+            val absolute = httpUrlOrNull(link.absUrl("href"))
+            if (absolute == null) link.removeAttr("href") else link.attr("href", absolute)
+        }
+        root.select("img").forEach { image ->
+            val sourceUrl = httpUrlOrNull(image.absUrl("src"))
+            val label = image.attr("alt").trim()
+                .ifBlank { image.attr("title").trim() }
+                .ifBlank { "Изображение недоступно офлайн" }
+            image.tagName("figure")
+            image.empty()
+            if (sourceUrl != null) image.attr("data-an-image-url", sourceUrl)
+            image.appendElement("figcaption").text(label)
+        }
+
+        val outputSettings = Document.OutputSettings().prettyPrint(false)
+        val safeHtml = Jsoup.clean(root.html(), baseUri, SAFE_HTML, outputSettings)
+            .trim()
+            .takeIf { it.isNotEmpty() }
+
         return ExtractedContent(
             title = title,
-            normalizedText = normalizeText(root.wholeText()),
+            normalizedText = normalizedText,
+            structuredContentFormat = safeHtml?.let { ContentFormats.SAFE_HTML_V1 },
+            structuredContent = safeHtml,
         )
+    }
+
+    private fun httpUrlOrNull(value: String): String? {
+        if (value.isBlank()) return null
+        val uri = runCatching { URI(value) }.getOrNull() ?: return null
+        val scheme = uri.scheme?.lowercase() ?: return null
+        if (scheme != "http" && scheme != "https") return null
+        if (uri.host.isNullOrBlank()) return null
+        return uri.toASCIIString()
     }
 
     private fun decodeText(body: ByteArray, contentType: String?): String {
@@ -176,6 +242,24 @@ class DefaultContentExtractor : ContentExtractor {
 
     private companion object {
         const val METADATA_PROBE_BYTES = 8192
+
+        val SAFE_HTML: Safelist = Safelist.none()
+            .addTags(
+                "h1", "h2", "h3", "h4", "h5", "h6",
+                "p", "br", "hr",
+                "ul", "ol", "li",
+                "blockquote",
+                "strong", "b", "em", "i",
+                "a", "code", "pre",
+                "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
+                "figure", "figcaption",
+            )
+            .addAttributes("a", "href", "title")
+            .addProtocols("a", "href", "http", "https")
+            .addAttributes("th", "colspan", "rowspan")
+            .addAttributes("td", "colspan", "rowspan")
+            .addAttributes("figure", "data-an-image-url")
+
         val META_CHARSET = Regex(
             """(?is)<meta\b[^>]*\bcharset\s*=\s*["']?\s*([A-Za-z0-9._:+-]+)""",
         )

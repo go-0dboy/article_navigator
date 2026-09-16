@@ -140,27 +140,31 @@ internal fun RawContentEntity.toDomain() = RawContent(
 )
 
 internal fun InboxItem.toEntity() = InboxItemEntity(
-    id.value,
-    canonicalUrl,
-    title,
-    publishedAt?.toEpochMilli(),
-    normalizedText,
-    contentHash,
-    createdAt.toEpochMilli(),
-    updatedAt.toEpochMilli(),
-    parserVersion,
+    id = id.value,
+    canonicalUrl = canonicalUrl,
+    title = title,
+    publishedAtEpochMillis = publishedAt?.toEpochMilli(),
+    normalizedText = normalizedText,
+    contentHash = contentHash,
+    createdAtEpochMillis = createdAt.toEpochMilli(),
+    updatedAtEpochMillis = updatedAt.toEpochMilli(),
+    parserVersion = parserVersion,
+    structuredContentFormat = structuredContentFormat,
+    structuredContent = structuredContent,
 )
 
 internal fun InboxItemEntity.toDomain() = InboxItem(
-    InboxItemId(id),
-    canonicalUrl,
-    title,
-    publishedAtEpochMillis?.let(Instant::ofEpochMilli),
-    normalizedText,
-    contentHash,
-    Instant.ofEpochMilli(createdAtEpochMillis),
-    Instant.ofEpochMilli(updatedAtEpochMillis),
-    parserVersion,
+    id = InboxItemId(id),
+    canonicalUrl = canonicalUrl,
+    title = title,
+    publishedAt = publishedAtEpochMillis?.let(Instant::ofEpochMilli),
+    normalizedText = normalizedText,
+    contentHash = contentHash,
+    createdAt = Instant.ofEpochMilli(createdAtEpochMillis),
+    updatedAt = Instant.ofEpochMilli(updatedAtEpochMillis),
+    parserVersion = parserVersion,
+    structuredContentFormat = structuredContentFormat,
+    structuredContent = structuredContent,
 )
 
 internal fun InboxOrigin.toEntity() = InboxOriginEntity(
@@ -192,21 +196,57 @@ internal fun InboxOriginEntity.toDomain() = InboxOrigin(
 )
 
 internal fun Document.toEntity() = DocumentEntity(
-    id.value, canonicalUrl, title, author, publishedAt?.toEpochMilli(), language, normalizedText, contentHash,
-    createdAt.toEpochMilli(), updatedAt.toEpochMilli(), disposition.name,
+    id = id.value,
+    canonicalUrl = canonicalUrl,
+    title = title,
+    author = author,
+    publishedAtEpochMillis = publishedAt?.toEpochMilli(),
+    language = language,
+    normalizedText = normalizedText,
+    contentHash = contentHash,
+    createdAtEpochMillis = createdAt.toEpochMilli(),
+    updatedAtEpochMillis = updatedAt.toEpochMilli(),
+    disposition = disposition.name,
+    structuredContentFormat = structuredContentFormat,
+    structuredContent = structuredContent,
 )
 
 internal fun DocumentEntity.toDomain() = Document(
-    DocumentId(id), canonicalUrl, title, author, publishedAtEpochMillis?.let(Instant::ofEpochMilli), language, normalizedText,
-    contentHash, Instant.ofEpochMilli(createdAtEpochMillis), Instant.ofEpochMilli(updatedAtEpochMillis), ContentDisposition.valueOf(disposition),
+    id = DocumentId(id),
+    canonicalUrl = canonicalUrl,
+    title = title,
+    author = author,
+    publishedAt = publishedAtEpochMillis?.let(Instant::ofEpochMilli),
+    language = language,
+    normalizedText = normalizedText,
+    contentHash = contentHash,
+    createdAt = Instant.ofEpochMilli(createdAtEpochMillis),
+    updatedAt = Instant.ofEpochMilli(updatedAtEpochMillis),
+    disposition = ContentDisposition.valueOf(disposition),
+    structuredContentFormat = structuredContentFormat,
+    structuredContent = structuredContent,
 )
 
 internal fun DocumentVersion.toEntity() = DocumentVersionEntity(
-    documentId.value, version, contentHash, normalizedText, fetchedAt.toEpochMilli(), parserVersion,
+    documentId = documentId.value,
+    version = version,
+    contentHash = contentHash,
+    normalizedText = normalizedText,
+    fetchedAtEpochMillis = fetchedAt.toEpochMilli(),
+    parserVersion = parserVersion,
+    structuredContentFormat = structuredContentFormat,
+    structuredContent = structuredContent,
 )
 
 internal fun DocumentVersionEntity.toDomain() = DocumentVersion(
-    DocumentId(documentId), version, contentHash, normalizedText, Instant.ofEpochMilli(fetchedAtEpochMillis), parserVersion,
+    documentId = DocumentId(documentId),
+    version = version,
+    contentHash = contentHash,
+    normalizedText = normalizedText,
+    fetchedAt = Instant.ofEpochMilli(fetchedAtEpochMillis),
+    parserVersion = parserVersion,
+    structuredContentFormat = structuredContentFormat,
+    structuredContent = structuredContent,
 )
 
 internal fun DocumentProvenance.toEntity() = DocumentProvenanceEntity(

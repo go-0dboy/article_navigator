@@ -1,22 +1,50 @@
 # Article Navigator
 
-Article Navigator is a local-first Android application for collecting material from user-selected sources, reviewing it in an Inbox and preserving selected items in a durable on-device library.
+Article Navigator is a local-first Android application for following **supported** Internet sources, reviewing new publications, reading them in a safe formatted form, saving useful material into a durable on-device library, and later finding it together with historical provenance.
 
-The current product goal is deliberately narrow: **save useful material, read the saved text later without the network, and retain where and when it came from.** Search and optional intelligence are later stages and are not required for preservation.
+The product is not a generic web crawler and does not promise support for every site. A source class is called supported only when there is a concrete acquisition contract, UI behavior and automated acceptance coverage.
 
-## Current product flow
+## Product scenarios
+
+Article Navigator is being built around four distinct scenarios:
+
+1. **Save one link** — paste/share one HTTP/HTTPS article and process it through the same reliable pipeline as scheduled content. This is manual capture, not a subscription.
+2. **Subscribe to a source** — configure a supported source and automatically discover new publications over time.
+3. **Detect an updated material** — distinguish rediscovery from an actual content/structure change and preserve immutable saved versions.
+4. **Read, save, search and restore** — review in Inbox, preserve locally, search offline and export/restore the canonical archive with provenance.
+
+The detailed contract and source-support matrix live in [Product specification](docs/PRODUCT-SPEC.md).
+
+## Current supported source boundary
+
+| Source class | Product state |
+| --- | --- |
+| RSS / Atom | Implemented and tested |
+| Single HTML article via paste/share | Next independent stage |
+| Static HTML section/index subscription | Next independent stage after feed discovery |
+| Structured API | Adapter-specific future work; no generic integration claim |
+| Named platform adapter | Future work only after a verified platform contract exists |
+| Dynamic JavaScript-rendered site | Not generically supported |
+| Authentication-required site | Not generically supported |
+
+An adapter enum/interface is not treated as an implemented integration. Unsupported sources must produce a clear explanation instead of silently degrading into a misleading “subscription”.
+
+## Current reliable flow
 
 ```text
-configured RSS/Atom sources
+supported source (currently RSS/Atom)
           |
           v
 background discovery + fetch
           |
           v
-strict decode / extract / normalize / deduplicate
+persisted processing ownership
           |
           v
-Inbox
+strict decode / safe extract / normalize
+          |
+          v
+Inbox + provenance snapshot
   |            |                 |
 reject    read-and-discard      save
                                  |
@@ -28,43 +56,50 @@ reject    read-and-discard      save
                  durable provenance snapshots
 ```
 
-## What is implemented
+## Structured reading stage
+
+The next functional layer preserves two coordinated representations:
+
+- `normalizedText` — plain text used for snippets, exact offline search and compatibility;
+- `safe-html-v1` — a versioned passive representation for headings, paragraphs, lists, quotes, emphasis, links, code and tables.
+
+Source scripts/forms/iframes and other active content are not persisted or executed. Relative links are resolved during extraction. Saved reading must not silently load remote resources.
+
+Images are deliberately conservative: the structured representation may retain inert image metadata/caption, but the first structured-content stage does not claim remote images are archived. Bounded app-private image storage is a separate local-resource stage; missing resources must show a placeholder and must never trigger silent network fallback.
+
+Legacy documents that contain only `normalizedText` remain readable in text mode. They are not re-downloaded or rewritten to invent structure.
+
+See [ADR 0007](docs/adr/0007-safe-limited-html.md).
+
+## Reliability baseline retained
 
 - Kotlin + Jetpack Compose Android application;
 - Room 3 / SQLite canonical local storage;
-- RSS/Atom collection through WorkManager and persisted scheduling state;
-- persisted processing ownership so an expired or replaced worker cannot commit stale processing results;
-- crash-resumable raw HTTP responses while temporary raw data remains valid;
-- strict content decoding with BOM, HTTP charset and document metadata handling;
-- transactional Inbox Save / Reject / Read-and-discard operations;
-- durable provenance snapshots independent of later Source renames or disabling;
-- saved-material library with stable keyset pagination and an independent exact count;
-- offline document reading from normalized text stored in the local database;
-- all saved provenance origins visible in document detail;
-- Flow + ViewModel + lifecycle-aware UI observation for Inbox and Library instead of periodic polling;
-- GitHub Actions tests, Room schema verification, Android lint and debug APK assembly.
+- WorkManager wake-up with persisted scheduling state;
+- RSS/Atom collection with deterministic fixtures;
+- persisted source/article ownership and stale-owner rejection;
+- crash-resumable temporary raw response bytes with Content-Type/final URL;
+- transactional Inbox Save / Reject / Read-and-discard;
+- durable Source/provenance snapshots;
+- stable keyset paging and reactive Inbox/Library observation;
+- local offline library reading;
+- migration-chain, schema, unit/integration, lint and APK CI gates.
 
-## Saved-content boundary
+Issue #18 tracks a separate scheduler refinement: successful queue continuation and infrastructure retry currently share WorkManager retry/backoff history.
 
-Article Navigator currently preserves **extracted normalized text and provenance**, not a guaranteed complete archive of the original web page. Images, scripts, attachments and every original page asset are not promised to be available offline.
+## Delivery order
 
-External URLs are opened only when the user explicitly chooses to open them. Availability of the original site is not required to read text that was already saved.
+Work is intentionally split into small PRs:
 
-## Persistence compatibility
+1. structured content persistence + migration + formatted offline reader for the existing RSS path;
+2. in-app URL capture + Android Share through the same ingestion queue;
+3. RSS/Atom discovery from an ordinary site page with feed choice/preview;
+4. constrained static HTML section subscriptions with preview;
+5. exact offline full-text search with rebuildable indexes;
+6. export/restore of text, structure, versions, provenance and local resources;
+7. product UI completion gates: navigation/back/activity restoration/offline/error/accessibility/theme/large-font checks;
+8. concrete API/platform adapters only when a real integration contract is implemented and tested.
 
-The current database schema is version 6. Released schema files are append-only in Git; migrations are tested instead of editing historical schema exports.
+Embeddings, LLM features and recommendations remain out of scope until collection, formatted reading, exact search and archive safety are complete.
 
-Schema v6 persists the parser version with pending Inbox text. This prevents an item extracted by an older parser from being relabelled as a newer parser merely because the user pressed Save after upgrading the application.
-
-## Next product stages
-
-The library stage is followed by separate changes, not one combined refactor:
-
-1. exact offline full-text search with deterministic FTS/index rebuild tests;
-2. export and restore with round-trip compatibility tests;
-3. manual URL capture through Android **Share**;
-4. semantic/hybrid retrieval only after exact search and archive portability are proven.
-
-Scheduler continuation/backoff refinement is tracked separately from the library UI so it cannot destabilize this product stage.
-
-See [Architecture](docs/ARCHITECTURE.md), [Development route](docs/ROADMAP.md), [Build instructions](docs/BUILDING.md) and [ADRs](docs/adr/).
+See [Architecture](docs/ARCHITECTURE.md), [Development route](docs/ROADMAP.md), [Build instructions](docs/BUILDING.md), [Product specification](docs/PRODUCT-SPEC.md) and [ADRs](docs/adr/).

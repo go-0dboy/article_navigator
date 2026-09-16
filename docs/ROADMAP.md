@@ -1,188 +1,229 @@
 # Development route
 
-This route is architecture-preserving: each stage adds one product capability without weakening canonical storage, processing ownership, transactional Inbox actions or historical provenance.
+This roadmap is architecture-preserving: each stage adds one product capability without weakening canonical storage, processing ownership, transactional Inbox actions or historical provenance. Product requirements and source-support boundaries are defined in `docs/PRODUCT-SPEC.md`.
 
-## Quality gate for every stage
+## Quality gate for every functional stage
 
 A stage is not complete until all applicable checks are true:
 
-- new production behavior has automated tests;
+- new production behavior has deterministic automated tests/fixtures;
 - every reproducible defect fixed in the stage has a regression test;
-- schema changes have a new migration and a newly exported Room schema; released schema files are not edited;
-- migration compatibility is tested from supported historical versions;
-- collectors/parser tests are deterministic and do not require live Internet;
-- Android UI/background behavior has unit, Robolectric or WorkManager tests where appropriate;
-- `./gradlew test --stacktrace` passes in GitHub Actions;
-- `./gradlew lint --stacktrace` passes in GitHub Actions;
-- `./gradlew assembleDebug --stacktrace` passes and the APK artifact is published;
-- Room schema consistency and wrapper/toolchain gates remain enabled;
-- exit criteria are demonstrated by tests or a reproducible device scenario.
+- schema changes have a new migration and committed Room schema export; historical exports are not edited;
+- supported migration paths preserve canonical content, versions and provenance;
+- new collectors/adapters use existing scheduler, ownership, retry, limits and transactional finalisation;
+- Android UI/background behavior has unit/Robolectric/WorkManager tests where appropriate;
+- navigation, system Back, Activity restoration, failure/retry and cold-offline behavior are tested when the stage changes those flows;
+- narrow-screen/dark-theme/large-font visual checks are reported when an emulator/device is available; unperformed visual/device checks are stated explicitly;
+- `./gradlew test --stacktrace`, Room schema consistency, `./gradlew lint --stacktrace` and `./gradlew assembleDebug --stacktrace` pass on the exact final SHA;
+- the debug APK identity/artifact gate remains enabled;
+- exit criteria are demonstrated by tests or a reproducible user scenario.
 
-No failing or bypassed quality gate is accepted for merge.
+No automatic merge is part of a stage. Merge is a separate explicit decision.
 
 ## Completed foundation
 
 ### Repository, storage and collector foundation — COMPLETE
 
-Implemented across the earlier phases:
-
 - reproducible multi-module Android/Kotlin build;
-- Room 3 canonical database with committed schema history;
-- source/source-cursor/discovery/document/provenance persistence;
-- RSS/Atom collection and deterministic fixture tests;
-- OkHttp transport and conditional collection state;
-- WorkManager Android wake-up path and persisted scheduling state;
+- Room canonical database and committed schema history;
+- source/cursor/discovery/document/provenance persistence;
+- RSS/Atom collection and deterministic feed fixtures;
+- OkHttp transport and conditional validators;
+- WorkManager wake-up plus persisted scheduling state;
 - discovery/fetch/normalization pipeline;
-- Inbox with Save / Reject / Read-and-discard;
-- canonical URL/content deduplication;
-- compact seen fingerprints.
+- Inbox Save / Reject / Read-and-discard;
+- canonical URL/content deduplication and compact seen fingerprints.
 
 ### Reliability hardening — COMPLETE
 
-The reliability stage is the baseline for all future product work:
-
 - persisted source-collection ownership;
 - persisted article-processing ownership;
-- stale owner/version writes rejected;
+- stale owner writes/finalisation rejected;
 - transactional discovery/source commits;
-- transactional Inbox Save/Reject/Read-and-discard using current origins;
+- transactional Inbox actions using current origins;
 - durable provenance snapshots with restrictive source relationships;
-- exact raw response bytes + Content-Type + final redirect URL retained for crash recovery while raw is valid;
+- exact temporary raw bytes + Content-Type + final URL for crash recovery;
 - file-backed close/reopen recovery tests;
-- bounded concurrency and article network-policy filtering;
-- shared collection+ingestion execution deadline;
-- infrastructure errors remain distinct from ordinary article failures;
-- historical v4 compatibility and complete migration-chain tests.
+- bounded concurrency and network-policy filtering;
+- shared collection+ingestion execution budget;
+- infrastructure errors separated from ordinary article failures;
+- historical v4 compatibility and complete migration-chain coverage.
 
-Scheduler continuation/backoff refinement is intentionally tracked separately from product UI work because the current worker uses one WorkManager `runAttemptCount` for successful continuation and infrastructure retry.
+Issue #18 remains an independent scheduler follow-up: successful continuation and infrastructure retry currently share WorkManager retry/backoff history.
 
-## Current stage — Saved Library and offline reading — IN VALIDATION (PR #17)
+### Saved Library and text offline reading — VALIDATED IN PR #17
 
-Product goal: **Save a material, see it in Library, read the saved text without network access, and understand where it came from.**
+Baseline source point for subsequent stacked work: `feat/library-offline-reading@83df388` with Android CI #343 green.
 
-Implemented in the current PR:
+Implemented there:
 
-- strict content decoding with precedence `BOM -> HTTP charset -> document metadata -> UTF-8`;
-- exact Cyrillic/Windows-1251/BOM/unknown/malformed decoding regression fixtures;
-- parser identity captured with extracted Inbox text;
-- schema v6 migration so existing v5 pending Inbox rows keep a conservative parser-v1 identity;
-- saved-library read model with title, saved date, short snippet and source summary;
-- stable keyset paging and exact independent count;
-- full local document detail loaded only when opened;
-- all saved provenance snapshots displayed from historical data;
-- offline reading independent of original-site availability;
-- external URLs opened only on explicit user action;
-- Inbox and Library Flow/ViewModel/lifecycle-aware observation;
-- removal of the two-second MainActivity storage polling loop;
-- Save -> saved-document navigation;
-- restart/file-backed tests for raw extraction, saved content and provenance;
-- background invalidation and paging ViewModel tests.
+- strict BOM / HTTP charset / document metadata / UTF-8 decoding;
+- parser identity persisted with pending text;
+- Room v6 migration;
+- saved Library with stable keyset paging and exact count;
+- local text reading and provenance detail;
+- reactive Inbox/Library ViewModels;
+- Save -> Library navigation;
+- restart/reopen tests for raw and saved data.
 
-Explicitly out of scope for this stage:
+## Stage A — Structured content and formatted reader — CURRENT
 
-- document deletion;
-- text editing;
-- complex version-management UI;
-- notes and tags;
-- cloud synchronization;
-- semantic search, embeddings or LLM functions;
-- scheduler retry/backoff redesign.
+First functional stage after requirements fixation.
 
-**Exit:** final PR HEAD passes tests/schema/lint/assemble/APK gates and the device scenario proves Save -> Library -> offline reopen -> provenance.
+Scope:
 
-## Next stage 1 — Exact offline full-text search
+- ADR 0007: `normalizedText` + versioned `safe-html-v1`;
+- make `ContentExtractor` explicitly parser-version aware (issue #19);
+- deterministic sanitizer for headings, paragraphs, lists, quotes, emphasis, links, inline/preformatted code and tables;
+- relative link resolution against final fetched URL;
+- inert offline image placeholders/metadata, with no remote image loading;
+- representation-aware content hash so structural/link changes can produce a new version even when plain text is unchanged;
+- persist structured format/content through Inbox -> Document -> DocumentVersion;
+- Room v7 migration with null structured fields for all legacy v1-v6 rows;
+- legacy text-only reader fallback without re-download or fabricated structure;
+- formatted offline reader that disables source script/active content and embedded network loads;
+- regression tests for sanitizer, parser version, migration, same-plain-text/different-structure version identity and file-backed reopen.
+
+**Exit:** existing RSS scenario produces a formatted saved document, survives reopen/offline reading, preserves provenance/versions, and exact final SHA passes all CI gates.
+
+## Stage B — One-shot URL capture
+
+Deliver two entry points in one acquisition contract:
+
+- paste HTTP/HTTPS URL inside the application;
+- Android Share target for HTTP/HTTPS URL.
+
+Both create/enqueue normal discovery work and use the existing article-processing ownership/fetch/extract/finalisation path. Manual capture is explicitly not a subscription.
+
+Acceptance:
+
+- invalid/non-http input has a clear user error;
+- duplicate URL/content follows normal dedup/version rules;
+- offline/transient failure remains retryable;
+- provenance identifies manual capture without inventing a subscribed Source;
+- Share/Paste -> Inbox -> read -> Save -> Library is tested.
+
+## Stage C — Discover RSS/Atom from a site page
+
+- user enters a normal site/page URL;
+- fetch page safely and inspect explicit feed declarations plus conservative same-site candidates;
+- show discovered feeds with titles/URLs and preview recent entries;
+- user chooses which feed to subscribe to;
+- no feed found -> clear explanation plus optional one-shot article capture when appropriate.
+
+Acceptance: deterministic HTML fixtures, relative feed URL resolution, multiple-feed choice, duplicate feed handling, no false claim that the whole site is automatically supported.
+
+## Stage D — Static HTML section subscriptions
+
+Implement a separate constrained adapter for index/list pages that expose stable publication links without JavaScript/authentication.
+
+- default heuristics use article-like links and same-site boundaries;
+- configuration preview shows which links would be discovered before enabling;
+- advanced CSS selectors are optional power-user settings, not required knowledge;
+- bound links per pass and response sizes;
+- use existing scheduler/ownership/retry/finalisation;
+- rediscovery vs changed content remains distinct;
+- disappearance from index never deletes saved content.
+
+Acceptance: deterministic section fixtures, preview, stable ids, bounded extraction, policy/error UI and queue integration.
+
+## Stage E — Exact offline search
 
 Implement exact search before semantic retrieval:
 
-- Room/SQLite FTS tables as derived indexes;
-- indexing of saved title/body and appropriate metadata;
-- exact terms, quoted phrases and identifiers;
-- deterministic ordering and metadata filters;
-- rebuild command/path from canonical saved records;
-- no dependency on network or an AI provider.
+- Search top-level destination;
+- SQLite/Room FTS or equivalent derived indexes for saved title/plain body and selected metadata;
+- exact terms, phrases and identifiers;
+- deterministic ordering and useful filters;
+- complete rebuild from canonical documents/versions after restore;
+- no network or AI dependency.
 
-**Tests:** exact-term fixtures, phrase/identifier cases, equal-score ordering, filters, index update after Save, and complete index rebuild equivalence.
+Acceptance: exact-term/phrase/identifier fixtures, index update after Save/version change, equal-score ordering, filters and rebuild equivalence.
 
-**Exit:** every saved text is discoverable offline through deterministic full-text search.
+## Stage F — Export and restore
 
-## Next stage 2 — Export and restore
+Create a portable versioned archive including:
 
-Create a portable archive path independent of a proprietary service:
+- documents and immutable document versions;
+- normalized plain text;
+- structured format/content;
+- provenance snapshots;
+- local resource metadata/bytes once resource storage exists;
+- archive/schema version and validation metadata.
 
-- documented export format for saved documents, versions and provenance;
-- explicit format/schema version;
-- restore into a clean installation;
-- duplicate/idempotency policy;
-- validation before replacing/adding canonical data;
-- no loss of parser version or historical Source snapshots.
+Restore into a clean install with explicit duplicate/idempotency policy. Derived search indexes are rebuilt from restored canonical data.
 
-**Tests:** export -> clean database -> restore -> export round-trip with equivalent canonical content/provenance, multiple origins, Unicode/Cyrillic and older supported records.
+Acceptance: export -> clean database -> restore -> export round trip with equivalent canonical content, multiple origins, versions, Cyrillic/Unicode, legacy text-only records and local resources.
 
-**Exit:** a user can recover the same saved knowledge/provenance on a clean installation.
+## Stage G — Local image/resources
 
-## Next stage 3 — Manual save through Android Share
+Implement the image policy defined by ADR 0007/product spec:
 
-Allow explicit capture of a URL sent from a browser or another Android application:
+- app-private storage only;
+- HTTP/HTTPS resource acquisition through bounded transport;
+- supported safe image formats;
+- MIME/hash/byte-length/original-URL metadata;
+- per-resource/per-document byte limits and image-count cap;
+- document/version ownership;
+- no silent remote fallback on missing/corrupt files;
+- export/restore integration.
 
-- Android Share target for HTTP/HTTPS URLs;
-- canonical validation and deduplication;
-- manual item enters the same ownership-aware fetch/extract/finalisation pipeline instead of a second storage path;
-- user can review/save using the same Inbox/Library model;
-- failures are visible and retryable without duplicate documents.
+Until this stage, formatted reading uses inert image placeholders/captions.
 
-**Tests:** Share intent parsing, invalid/non-http input, duplicate URL/content, offline/failure recovery and end-to-end manual URL -> Inbox -> Save -> Library.
+## Stage H — Product UI completion
 
-**Exit:** a user can send a link to Article Navigator through Android Share and preserve it through the same reliable pipeline.
+Converge implemented capabilities into finished Android navigation:
 
-## Later stages
+- top-level Inbox / Library / Sources / Search / Settings;
+- Inbox detail reading before Save/Reject;
+- consistent typography/components and light/dark themes;
+- adjustable reading size, selection/copy and provenance panel;
+- accessible labels/system font scaling;
+- correct system Back behavior;
+- selected screen/document and reading-position restoration;
+- explicit loading/offline/error/empty/unsupported states;
+- source add/preview/edit/pause/resume, collection parameters, last-check state/error, form preservation;
+- release UI excludes debug fixtures/commands; understandable diagnostics live in Settings.
 
-### Semantic and hybrid retrieval
+Acceptance includes Activity/navigation/back/retry/cold-offline tests and visual checks on narrow screen, dark theme and enlarged font when runtime infrastructure is available.
 
-Only after exact search is proven:
+## Concrete API and platform adapters — AFTER CORE FLOWS
 
-- replaceable `EmbeddingProvider`;
-- chunk/version metadata;
-- rebuildable vector index;
-- hybrid fusion with exact FTS;
+No generic “API support” or “platform support” milestone exists. Each integration is its own small stage and names the actual provider/contract.
+
+Required before support is claimed:
+
+- verified accessible API/feed/export contract;
+- authentication/session/rate/pagination semantics where applicable;
+- fixtures/mocks from the documented contract;
+- source preview and user-facing limitation text;
+- same scheduler/ownership/retry/pipeline/finalisation guarantees.
+
+Generic dynamic JavaScript sites and generic authenticated sites remain unsupported until dedicated secure acquisition designs exist.
+
+## Semantic/hybrid retrieval — LATER
+
+Only after exact search and archive portability are proven:
+
+- replaceable embedding provider;
+- rebuildable chunk/vector indexes;
+- hybrid fusion with exact search;
 - retrieval evaluation corpus.
 
-### Interest/relevance model
-
-- explicit interests and positive/negative feedback;
-- cheap relevance scoring before expensive optional processing;
-- explainable reason metadata;
-- regression evaluation corpus.
-
-### Additional source adapters
-
-- static HTML/manual-page adapters where technically and legally appropriate;
-- structured REST/release feeds;
-- shared collector contract tests for every adapter.
-
-### Optional intelligence layer
-
-- summarizer/tagger/answer interfaces only after archive/search fundamentals;
-- local/cloud implementations optional;
-- generated metadata never replaces saved source text;
-- answers retain references to saved material.
-
-### Optional multi-device sync
-
-- revision/outbox protocol;
-- encrypted transport design;
-- conflict behavior;
-- local database remains canonical for offline operation.
+LLM summaries, recommendations or answers never replace canonical source-derived content/provenance.
 
 ## Non-negotiable engineering requirements
 
 - no feature silently discards provenance;
 - stale processing owners cannot commit;
 - UI cannot bypass transactional Inbox lifecycle methods;
-- canonical migrations are tested before release;
-- historical schema exports are immutable;
-- derived indexes can be deleted and rebuilt;
-- collector/discovery processing remains idempotent;
-- saved normalized text remains readable without network access;
-- user export must remain possible without a proprietary server;
-- AI-generated data never becomes the only copy of source-derived text;
-- CI quality gates remain enabled on every merge.
+- collector/discovery remains idempotent;
+- source removal/disable never destroys saved copies or historical origin snapshots;
+- structured/source active content is never executed by the offline reader;
+- offline document open never silently loads remote resources;
+- historical schema exports are immutable and migrations are tested;
+- derived search indexes can be deleted/rebuilt;
+- legacy text-only content remains readable without automatic re-download;
+- user archive remains recoverable without a proprietary server;
+- unsupported source classes are explained rather than falsely advertised;
+- CI quality gates remain enabled for every merge decision.

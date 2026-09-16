@@ -29,6 +29,7 @@ import java.time.ZoneOffset
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -164,7 +165,7 @@ class IngestionPipelineTest {
     }
 
     @Test
-    fun `same normalized content merges provenance into existing Inbox item`() = runTest {
+    fun `same structured content merges provenance into existing Inbox item`() = runTest {
         val discovered = discovered("https://example.test/alternate")
         val body = "<article><p>Same durable content</p></article>".toByteArray()
         val extracted = DefaultContentExtractor().extract(body, "text/html", discovered.url)
@@ -173,9 +174,12 @@ class IngestionPipelineTest {
             canonicalUrl = "https://example.test/original",
             title = "Original",
             normalizedText = extracted.normalizedText,
-            contentHash = sha256ForTest(extracted.normalizedText),
+            contentHash = structuredHashForTest(extracted),
             createdAt = now.minusSeconds(10),
             updatedAt = now.minusSeconds(10),
+            parserVersion = DefaultContentExtractor().parserVersion,
+            structuredContentFormat = extracted.structuredContentFormat,
+            structuredContent = extracted.structuredContent,
         )
         val ingestion = FakeIngestionRepository(discovered).apply { inboxItems[existing.id] = existing }
         val pipeline = pipeline(ingestion) { FetchResult(it, 200, "text/html", body) }
@@ -187,6 +191,53 @@ class IngestionPipelineTest {
         assertEquals(1, ingestion.inboxOrigins.getValue(existing.id).size)
         assertEquals(discovered.id, ingestion.inboxOrigins.getValue(existing.id).single().discoveredItemId)
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.items.getValue(discovered.id).status)
+    }
+
+    @Test
+    fun `plain text keeps historical normalized text hash`() = runTest {
+        val discovered = discovered("https://example.test/plain")
+        val ingestion = FakeIngestionRepository(discovered)
+        val pipeline = pipeline(ingestion) {
+            FetchResult(it, 200, "text/plain; charset=utf-8", "Same durable text".toByteArray())
+        }
+
+        val report = pipeline.processReady()
+
+        assertEquals(1, report.addedToInbox)
+        assertEquals(
+            sha256ForTest("Same durable text"),
+            ingestion.items.getValue(discovered.id).contentHash,
+        )
+        assertEquals(null, ingestion.inboxItems.values.single().structuredContentFormat)
+        assertEquals(null, ingestion.inboxItems.values.single().structuredContent)
+    }
+
+    @Test
+    fun `same plain text with changed hyperlink target has different structured identity`() = runTest {
+        val first = discovered("https://example.test/link-one")
+        val second = discovered("https://example.test/link-two")
+        val ingestion = FakeIngestionRepository(first).apply { items[second.id] = second }
+        val pipeline = pipeline(ingestion) { item ->
+            val target = if (item.id == first.id) "/target-a" else "/target-b"
+            FetchResult(
+                item,
+                200,
+                "text/html; charset=utf-8",
+                "<article><p>Read <a href=\"$target\">this</a></p></article>".toByteArray(),
+            )
+        }
+
+        val report = pipeline.processReady(limit = 2)
+
+        assertEquals(2, report.addedToInbox)
+        assertEquals(2, ingestion.inboxItems.size)
+        val firstHash = ingestion.items.getValue(first.id).contentHash
+        val secondHash = ingestion.items.getValue(second.id).contentHash
+        assertNotEquals(firstHash, secondHash)
+        assertEquals(
+            ingestion.inboxItems.values.map { it.normalizedText }.distinct().size,
+            1,
+        )
     }
 
     @Test
@@ -419,6 +470,12 @@ private class FakeIngestionRepository(initial: DiscoveredItem) : IngestionReposi
         activeLeaseToken = null
         activeLeaseExpiresAt = null
     }
+}
+
+private fun structuredHashForTest(extracted: ExtractedContent): String {
+    val format = checkNotNull(extracted.structuredContentFormat)
+    val structured = checkNotNull(extracted.structuredContent)
+    return sha256ForTest("structured\u0000$format\u0000$structured")
 }
 
 private fun sha256ForTest(value: String): String = java.security.MessageDigest.getInstance("SHA-256")

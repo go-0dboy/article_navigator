@@ -1,9 +1,12 @@
 package io.github.go0dboy.articlenavigator.pipeline
 
+import io.github.go0dboy.articlenavigator.core.model.ContentFormats
 import java.nio.charset.Charset
 import java.util.Base64
+import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,13 +43,61 @@ class ContentExtractionTest {
     }
 
     @Test
-    fun `plain text is normalized without html parser`() {
+    fun `plain text stays text only so historical content identity remains stable`() {
         val result = extractor.extract(
             "  alpha   beta\r\n\r\n gamma  ".toByteArray(),
             "text/plain; charset=utf-8",
             "https://example.test/plain",
         )
+
         assertEquals("alpha beta\n\ngamma", result.normalizedText)
+        assertNull(result.structuredContentFormat)
+        assertNull(result.structuredContent)
+    }
+
+    @Test
+    fun `safe html preserves passive structure and strips active source content`() {
+        val html = """
+            <html><body><article>
+              <h2>Section</h2>
+              <p onclick="evil()"><strong>Bold</strong> and <em>italic</em>
+                <a href="/next">relative</a>
+                <a href="javascript:alert(1)">unsafe</a>
+                <code>inline()</code>
+              </p>
+              <blockquote>Quote</blockquote>
+              <ul><li>One</li><li>Two</li></ul>
+              <ol><li>First</li></ol>
+              <pre>  val x = 1\n    val y = 2</pre>
+              <table><thead><tr><th>A</th></tr></thead><tbody><tr><td>B</td></tr></tbody></table>
+              <img src="/image.png" alt="Diagram" onerror="evil()">
+              <script>alert('never persist')</script>
+              <iframe src="https://evil.test/frame"></iframe>
+            </article></body></html>
+        """.trimIndent().toByteArray()
+
+        val result = extractor.extract(html, "text/html; charset=utf-8", "https://example.test/articles/1")
+        val safe = checkNotNull(result.structuredContent)
+        val safeDocument = Jsoup.parseBodyFragment(safe)
+
+        assertEquals(ContentFormats.SAFE_HTML_V1, result.structuredContentFormat)
+        assertTrue(safe.contains("<h2>Section</h2>"))
+        assertTrue(safe.contains("<strong>Bold</strong>"))
+        assertTrue(safe.contains("<em>italic</em>"))
+        assertTrue(safe.contains("href=\"https://example.test/next\""))
+        assertTrue(safe.contains("<blockquote>Quote</blockquote>"))
+        assertTrue(safe.contains("<ul>"))
+        assertTrue(safe.contains("<ol>"))
+        assertEquals("  val x = 1\n    val y = 2", checkNotNull(safeDocument.selectFirst("pre")).wholeText())
+        assertTrue(safe.contains("<table>"))
+        assertTrue(safe.contains("<figure data-an-image-url=\"https://example.test/image.png\">"))
+        assertTrue(safe.contains("<figcaption>Diagram</figcaption>"))
+        assertFalse(safe.contains("javascript:"))
+        assertFalse(safe.contains("onclick"))
+        assertFalse(safe.contains("onerror"))
+        assertFalse(safe.contains("<script"))
+        assertFalse(safe.contains("<iframe"))
+        assertFalse(safe.contains("<img"))
     }
 
     @Test

@@ -36,12 +36,7 @@ interface ArticleProcessingDao {
           AND (processingLeaseToken IS NULL OR processingLeaseExpiresAtEpochMillis IS NULL OR processingLeaseExpiresAtEpochMillis <= :nowEpochMillis)
         """,
     )
-    suspend fun claim(
-        id: String,
-        runToken: String,
-        nowEpochMillis: Long,
-        leaseExpiresAtEpochMillis: Long,
-    ): Int
+    suspend fun claim(id: String, runToken: String, nowEpochMillis: Long, leaseExpiresAtEpochMillis: Long): Int
 
     @Query("SELECT * FROM discovered_items WHERE id = :id LIMIT 1")
     suspend fun item(id: String): DiscoveredItemEntity?
@@ -71,9 +66,7 @@ interface ArticleProcessingDao {
 
     @Query(
         """
-        UPDATE discovered_items SET
-            processingLeaseToken = NULL,
-            processingLeaseExpiresAtEpochMillis = NULL
+        UPDATE discovered_items SET processingLeaseToken = NULL, processingLeaseExpiresAtEpochMillis = NULL
         WHERE id = :id AND processingLeaseToken = :runToken
         """,
     )
@@ -111,22 +104,17 @@ interface ArticleProcessingDao {
     suspend fun deleteRaw(id: String)
 
     @Transaction
-    suspend fun storeRawOwned(
-        id: String,
-        runToken: String,
-        atEpochMillis: Long,
-        content: RawContentEntity,
-    ): Boolean {
+    suspend fun storeRawOwned(id: String, runToken: String, atEpochMillis: Long, content: RawContentEntity): Boolean {
         if (owns(id, runToken, atEpochMillis) != 1) return false
         require(content.discoveredItemId == id)
         val updated = updateRaw(
-            id = id,
-            contentType = content.contentType,
-            payload = content.payload,
-            resolvedUrl = content.resolvedUrl,
-            fetchedAtEpochMillis = content.fetchedAtEpochMillis,
-            httpStatus = content.httpStatus,
-            expiresAtEpochMillis = content.expiresAtEpochMillis,
+            id,
+            content.contentType,
+            content.payload,
+            content.resolvedUrl,
+            content.fetchedAtEpochMillis,
+            content.httpStatus,
+            content.expiresAtEpochMillis,
         )
         if (updated == 0) insertRaw(content)
         return true
@@ -147,14 +135,7 @@ interface ArticleProcessingDao {
           AND processingLeaseExpiresAtEpochMillis > :atEpochMillis
         """,
     )
-    suspend fun markFetchedOwned(
-        id: String,
-        runToken: String,
-        atEpochMillis: Long,
-        canonicalUrl: String,
-        resolvedUrl: String?,
-        contentHash: String,
-    ): Int
+    suspend fun markFetchedOwned(id: String, runToken: String, atEpochMillis: Long, canonicalUrl: String, resolvedUrl: String?, contentHash: String): Int
 
     @Query(
         """
@@ -195,22 +176,10 @@ interface ArticleProcessingDao {
           AND processingLeaseExpiresAtEpochMillis > :atEpochMillis
         """,
     )
-    suspend fun markSkippedOwned(
-        id: String,
-        runToken: String,
-        atEpochMillis: Long,
-        canonicalUrl: String?,
-        lastProcessingError: String,
-    ): Int
+    suspend fun markSkippedOwned(id: String, runToken: String, atEpochMillis: Long, canonicalUrl: String?, lastProcessingError: String): Int
 
     @Transaction
-    suspend fun skipOwned(
-        id: String,
-        runToken: String,
-        atEpochMillis: Long,
-        canonicalUrl: String?,
-        lastProcessingError: String,
-    ): Boolean {
+    suspend fun skipOwned(id: String, runToken: String, atEpochMillis: Long, canonicalUrl: String?, lastProcessingError: String): Boolean {
         if (markSkippedOwned(id, runToken, atEpochMillis, canonicalUrl, lastProcessingError) != 1) return false
         deleteRaw(id)
         return true
@@ -239,17 +208,10 @@ interface ArticleProcessingDao {
     )
     suspend fun dismissedFingerprint(canonicalUrlHash: String, contentHash: String): SeenFingerprintEntity?
 
-    @Upsert
-    suspend fun upsertInboxItem(item: InboxItemEntity)
-
-    @Upsert
-    suspend fun upsertInboxOrigin(origin: InboxOriginEntity)
-
-    @Upsert
-    suspend fun upsertProvenance(provenance: DocumentProvenanceEntity)
-
-    @Upsert
-    suspend fun upsertFingerprint(fingerprint: SeenFingerprintEntity)
+    @Upsert suspend fun upsertInboxItem(item: InboxItemEntity)
+    @Upsert suspend fun upsertInboxOrigin(origin: InboxOriginEntity)
+    @Upsert suspend fun upsertProvenance(provenance: DocumentProvenanceEntity)
+    @Upsert suspend fun upsertFingerprint(fingerprint: SeenFingerprintEntity)
 
     @Query(
         """
@@ -289,54 +251,80 @@ interface ArticleProcessingDao {
         if (owns(id, runToken, atEpochMillis) != 1) return IngestionFinalizeOutcome.STALE
         require(origin.discoveredItemId == id)
 
-        val document = documentByCanonicalUrl(item.canonicalUrl) ?: documentByContentHash(item.contentHash)
-        val outcome = when {
-            document != null -> {
-                upsertProvenance(
-                    DocumentProvenanceEntity(
-                        documentId = document.id,
-                        originKey = "${origin.sourceId}|${origin.discoveredUrl}",
-                        sourceId = origin.sourceId,
-                        discoveredUrl = origin.discoveredUrl,
-                        resolvedUrl = origin.resolvedUrl,
-                        discoveredAtEpochMillis = origin.discoveredAtEpochMillis,
-                        fetchedAtEpochMillis = origin.fetchedAtEpochMillis,
-                        sourceNameSnapshot = origin.sourceNameSnapshot,
-                        sourceUrlSnapshot = origin.sourceUrlSnapshot,
-                        sourceTypeSnapshot = origin.sourceTypeSnapshot,
-                    ),
-                )
+        val byUrl = documentByCanonicalUrl(item.canonicalUrl)
+        val byContent = documentByContentHash(item.contentHash)
+        // Same canonical URL is only "known" when the saved representation is unchanged. A changed
+        // representation for the same material must reach Inbox so Save can append DocumentVersion.
+        val unchangedDocument = when {
+            byUrl != null && byUrl.contentHash == item.contentHash -> byUrl
+            byUrl == null && byContent != null -> byContent
+            else -> null
+        }
+
+        val outcome = if (unchangedDocument != null) {
+            upsertProvenance(
+                DocumentProvenanceEntity(
+                    documentId = unchangedDocument.id,
+                    originKey = "${origin.sourceId}|${origin.discoveredUrl}",
+                    sourceId = origin.sourceId,
+                    discoveredUrl = origin.discoveredUrl,
+                    resolvedUrl = origin.resolvedUrl,
+                    discoveredAtEpochMillis = origin.discoveredAtEpochMillis,
+                    fetchedAtEpochMillis = origin.fetchedAtEpochMillis,
+                    sourceNameSnapshot = origin.sourceNameSnapshot,
+                    sourceUrlSnapshot = origin.sourceUrlSnapshot,
+                    sourceTypeSnapshot = origin.sourceTypeSnapshot,
+                ),
+            )
+            upsertFingerprint(
+                SeenFingerprintEntity(
+                    canonicalUrlHash = canonicalUrlHash,
+                    contentHash = item.contentHash,
+                    sourceId = origin.sourceId,
+                    seenAtEpochMillis = atEpochMillis,
+                    disposition = "SAVED",
+                ),
+            )
+            IngestionFinalizeOutcome.ALREADY_KNOWN
+        } else {
+            val dismissed = dismissedFingerprint(canonicalUrlHash, item.contentHash)
+            if (dismissed != null) {
                 upsertFingerprint(
                     SeenFingerprintEntity(
                         canonicalUrlHash = canonicalUrlHash,
                         contentHash = item.contentHash,
                         sourceId = origin.sourceId,
                         seenAtEpochMillis = atEpochMillis,
-                        disposition = "SAVED",
+                        disposition = dismissed.disposition,
                     ),
                 )
                 IngestionFinalizeOutcome.ALREADY_KNOWN
-            }
-
-            else -> {
-                val dismissed = dismissedFingerprint(canonicalUrlHash, item.contentHash)
-                if (dismissed != null) {
-                    upsertFingerprint(
-                        SeenFingerprintEntity(
-                            canonicalUrlHash = canonicalUrlHash,
-                            contentHash = item.contentHash,
-                            sourceId = origin.sourceId,
-                            seenAtEpochMillis = atEpochMillis,
-                            disposition = dismissed.disposition,
-                        ),
-                    )
-                    IngestionFinalizeOutcome.ALREADY_KNOWN
-                } else {
-                    val existingInbox = inboxByCanonicalUrl(item.canonicalUrl) ?: inboxByContentHash(item.contentHash)
-                    if (existingInbox != null) {
-                        upsertInboxOrigin(origin.copy(inboxItemId = existingInbox.id))
+            } else {
+                val inboxByUrl = inboxByCanonicalUrl(item.canonicalUrl)
+                val inboxByContent = inboxByContentHash(item.contentHash)
+                when {
+                    inboxByUrl != null && inboxByUrl.contentHash != item.contentHash -> {
+                        // One pending row per canonical material: advance it to the newest observed
+                        // representation while retaining its first-created timestamp and all origins.
+                        upsertInboxItem(
+                            item.copy(
+                                id = inboxByUrl.id,
+                                createdAtEpochMillis = inboxByUrl.createdAtEpochMillis,
+                                updatedAtEpochMillis = atEpochMillis,
+                            ),
+                        )
+                        upsertInboxOrigin(origin.copy(inboxItemId = inboxByUrl.id))
                         IngestionFinalizeOutcome.MERGED_INTO_INBOX
-                    } else {
+                    }
+                    inboxByUrl != null -> {
+                        upsertInboxOrigin(origin.copy(inboxItemId = inboxByUrl.id))
+                        IngestionFinalizeOutcome.MERGED_INTO_INBOX
+                    }
+                    inboxByContent != null -> {
+                        upsertInboxOrigin(origin.copy(inboxItemId = inboxByContent.id))
+                        IngestionFinalizeOutcome.MERGED_INTO_INBOX
+                    }
+                    else -> {
                         upsertInboxItem(item)
                         upsertInboxOrigin(origin)
                         IngestionFinalizeOutcome.ADDED_TO_INBOX

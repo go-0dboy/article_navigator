@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -65,8 +66,8 @@ class MigrationFullChainV5Test {
             }
 
             helper.runMigrationsAndValidate(
-                6,
-                listOf(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6),
+                7,
+                listOf(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7),
             ).also { connection ->
                 assertEquals("blob", scalarText(connection, "SELECT typeof(payload) FROM raw_contents WHERE discoveredItemId='item-1'"))
                 assertEquals("text/html; charset=utf-8", scalarText(connection, "SELECT contentType FROM raw_contents WHERE discoveredItemId='item-1'"))
@@ -76,6 +77,9 @@ class MigrationFullChainV5Test {
                     ContentParserVersions.DEFAULT_EXTRACTOR_V1,
                     scalarText(connection, "SELECT parserVersion FROM inbox_items WHERE id='inbox-1'"),
                 )
+                assertEquals(1L, scalarLong(connection, "SELECT COUNT(*) FROM inbox_items WHERE id='inbox-1' AND structuredContentFormat IS NULL AND structuredContent IS NULL"))
+                assertEquals(1L, scalarLong(connection, "SELECT COUNT(*) FROM documents WHERE id='doc-1' AND structuredContentFormat IS NULL AND structuredContent IS NULL"))
+                assertEquals(1L, scalarLong(connection, "SELECT COUNT(*) FROM document_versions WHERE documentId='doc-1' AND version=1 AND structuredContentFormat IS NULL AND structuredContent IS NULL"))
                 assertEquals("Source One", scalarText(connection, "SELECT sourceNameSnapshot FROM document_provenance WHERE documentId='doc-1'"))
                 assertEquals(2L, scalarLong(connection, "SELECT consecutiveFailures FROM source_collection_states WHERE sourceId='source-1'"))
                 assertIndexExists(connection, "index_discovered_items_processingLeaseExpiresAtEpochMillis")
@@ -97,7 +101,14 @@ class MigrationFullChainV5Test {
             // through the current generated Room implementation and read every durable domain.
             val database = Room.databaseBuilder<ArticleNavigatorDatabase>(databaseFile.toAbsolutePath().toString())
                 .setDriver(BundledSQLiteDriver())
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                )
                 .build()
             try {
                 val sources = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
@@ -119,6 +130,8 @@ class MigrationFullChainV5Test {
                 val pending = inbox.findById(InboxItemId("inbox-1"))
                 assertNotNull(pending)
                 assertEquals(ContentParserVersions.DEFAULT_EXTRACTOR_V1, pending?.parserVersion)
+                assertNull(pending?.structuredContentFormat)
+                assertNull(pending?.structuredContent)
                 val origin = inbox.origins(InboxItemId("inbox-1")).single()
                 assertEquals(SourceId("source-1"), origin.sourceId)
                 assertEquals("Source One", origin.sourceNameSnapshot)
@@ -127,7 +140,12 @@ class MigrationFullChainV5Test {
 
                 val document = knowledge.findById(DocumentId("doc-1"))
                 assertNotNull(document)
-                assertEquals("parser-v1", knowledge.versions(DocumentId("doc-1")).single().parserVersion)
+                assertNull(document?.structuredContentFormat)
+                assertNull(document?.structuredContent)
+                val version = knowledge.versions(DocumentId("doc-1")).single()
+                assertEquals("parser-v1", version.parserVersion)
+                assertNull(version.structuredContentFormat)
+                assertNull(version.structuredContent)
                 val provenance = knowledge.provenance(DocumentId("doc-1")).single()
                 assertEquals("Source One", provenance.sourceNameSnapshot)
                 assertEquals("https://example.test/feed.xml", provenance.sourceUrlSnapshot)
