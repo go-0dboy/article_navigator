@@ -21,11 +21,17 @@ import io.github.go0dboy.articlenavigator.core.model.SourceId
 import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Duration
 import java.time.Instant
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -155,6 +161,41 @@ class LibraryReadIntegrationTest {
         assertEquals(240, item.snippet.length)
         assertFalse(item.snippet == longBody)
         assertEquals(longBody, library.observeDocument(document.id).first()?.document?.normalizedText)
+    }
+
+    @Test
+    fun revisionInvalidatesWhenExistingDocumentChangesWithoutCountChange() = runTest {
+        val source = source("source-a", "Source")
+        sources.upsert(source)
+        val document = savedDocument("doc-update", now, "Original body")
+        persist(document, source, provenance(document, source, document.canonicalUrl, now.minusSeconds(1)))
+        assertEquals(1, library.observeSavedCount().first())
+
+        val emissions = Channel<Long>(capacity = 2)
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+            library.observeRevision().take(2).collect { emissions.send(it) }
+        }
+        val firstRevision = withTimeout(5_000) { emissions.receive() }
+
+        database.documentDao().upsert(
+            document.copy(
+                title = "Updated title",
+                normalizedText = "Updated body",
+                contentHash = "updated-hash",
+                updatedAt = now.plusSeconds(1),
+            ).toEntity(),
+        )
+
+        val secondRevision = withTimeout(5_000) { emissions.receive() }
+        collector.join()
+
+        // Room invalidation must emit even though the lightweight scalar revision value can stay
+        // equal when only existing row contents change.
+        assertEquals(firstRevision, secondRevision)
+        assertEquals(1, library.observeSavedCount().first())
+        val updated = library.loadPage(null, 10).single()
+        assertEquals("Updated title", updated.title)
+        assertEquals("Updated body", updated.snippet)
     }
 
     private suspend fun persist(document: Document, source: Source, provenance: DocumentProvenance) {
