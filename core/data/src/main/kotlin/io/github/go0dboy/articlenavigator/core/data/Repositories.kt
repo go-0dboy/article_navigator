@@ -217,6 +217,28 @@ interface InboxRepository {
     suspend fun findByContentHash(contentHash: String): InboxItem?
     suspend fun origins(id: InboxItemId): List<InboxOrigin>
 
+    /**
+     * Reads the current Inbox row and every current origin, resolves any existing Document,
+     * persists Document/version/provenance/fingerprints, and removes Inbox in one DB transaction.
+     * Returns null when another committed action already consumed the Inbox row.
+     */
+    suspend fun saveCurrent(
+        id: InboxItemId,
+        at: Instant,
+        parserVersion: String,
+    ): DocumentId?
+
+    /**
+     * Reads current item/origins, persists all dismissal fingerprints, and removes Inbox in one
+     * transaction. Returns false when the row was already consumed by another committed action.
+     */
+    suspend fun discardCurrent(
+        id: InboxItemId,
+        disposition: ContentDisposition,
+        at: Instant,
+    ): Boolean
+
+    /** Legacy/import helpers; UI/runtime user actions must use saveCurrent/discardCurrent. */
     suspend fun discard(
         id: InboxItemId,
         disposition: ContentDisposition,
