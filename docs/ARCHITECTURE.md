@@ -2,167 +2,184 @@
 
 ## Product objective
 
-Article Navigator observes user-configured sources, lets the user decide what is worth keeping, and preserves saved normalized text together with durable historical provenance. The current product promise is: **a saved material can be read later from the local database, even when the original website is unavailable, and the user can still see where the material came from.**
+Article Navigator follows **supported** Internet sources, lets the user review and read discovered material, preserves selected content locally, and keeps durable historical provenance so saved knowledge remains understandable even when the original site changes or disappears.
+
+The architecture must support more than RSS over time, but it does not assume that every website can be crawled. Each supported source class needs an explicit acquisition contract, preview/error behavior and deterministic tests. Manual saving of one URL is a different capability from automatic subscription.
+
+The normative product scenarios and source support matrix are defined in `docs/PRODUCT-SPEC.md`.
 
 ## Architectural principles
 
-1. **Local-first.** The on-device Room/SQLite database is the source of truth for saved material.
-2. **Provenance is mandatory.** Saved documents retain source snapshots and original/final URLs instead of looking up mutable current Source settings.
-3. **Inbox and Library are different lifecycles.** Fetched material is pending until the user saves it; rejected/read-and-discarded material does not become a saved document.
-4. **Transactional user actions.** Save/Reject/Read-and-discard consume the current Inbox row and its current origins in one Room transaction.
-5. **Processing ownership is persisted.** Article processing requires an expiring token; an old network request may finish, but an expired/replaced owner cannot commit raw/intermediate/final state.
-6. **Content interpretation is versioned.** The parser version is captured with extracted Inbox text and copied into a new `DocumentVersion` when that text is saved.
-7. **Historical schema is immutable.** Released Room schema exports are never rewritten; new schema versions use explicit migrations and compatibility tests.
-8. **UI observation is reactive.** Inbox and Library are read through Flow/ViewModel/lifecycle-aware state, not timer polling.
-9. **List reads are bounded.** List projections do not load full saved text; both Inbox and Library use stable keyset paging and independent counts.
-10. **Derived indexes are rebuildable.** Future FTS/vector indexes are secondary to canonical saved text and provenance.
-11. **AI is optional future infrastructure.** Preservation and offline reading do not require a model or cloud service.
+1. **Local-first.** Room/SQLite is canonical for saved material and user-visible historical state.
+2. **Provenance is mandatory.** Source snapshots and original/final URLs survive later source edits/removal.
+3. **Inbox and Library are distinct lifecycles.** Pending material is not saved knowledge until transactional Save.
+4. **Transactional user actions.** Save/Reject/Read-and-discard consume the current Inbox row and current origins in one Room transaction.
+5. **Processing ownership is persisted.** An old/expired worker may finish a network request but cannot commit stale state.
+6. **Acquisition adapters share one pipeline.** New manual/source adapters must use existing scheduler/ownership/retry/limits/finalisation rather than a simplified write path.
+7. **Content interpretation is versioned.** The extractor declares the durable parser version and the structured format that produced persisted content.
+8. **Plain text and reading structure are separate responsibilities.** Plain text remains the exact-search/compatibility representation; formatted reading uses a versioned safe representation.
+9. **Historical schema is immutable.** Released Room exports are append-only; compatibility changes use explicit migrations.
+10. **UI observation is reactive and bounded.** Flow/ViewModel/lifecycle state plus keyset paging replace polling/unbounded reads.
+11. **Derived indexes are rebuildable.** FTS/vector/search indexes are secondary to canonical documents/versions/provenance/resources.
+12. **AI is optional future infrastructure.** Collection, reading, exact search and restore must work without a model/cloud provider.
 
-## Current logical flow
+## Logical flow
 
 ```text
-Sources
-  |
-  v
-Collector adapters ----> persisted source cursor / scheduler state
-  |
-  v
-Discovery
-  |
-  v
+Source configuration / manual capture
+          |
+          v
+Source adapter or one-shot acquisition contract
+          |
+          v
+Discovery record + durable provenance URL
+          |
+          v
 Article processing lease
-  |
-  +--> HTTP fetch ----> temporary durable raw bytes + Content-Type + final URL
-  |                         |
-  |                         `---- crash/reopen resume while valid
-  v
-strict decode / extract / normalize
-  |
-  v
+          |
+          +--> HTTP fetch --> temporary exact raw bytes + Content-Type + final URL
+          |                         |
+          |                         `--> crash/reopen reuse while valid
+          v
+version-aware extractor
+          |
+          +--> normalizedText (search/snippet/legacy compatibility)
+          |
+          `--> structuredContent (safe-html-v1 when available)
+          |
+          v
+representation-aware content hash
+          |
+          v
 atomic finalisation
-  |- already saved/dismissed -> provenance/fingerprint update
-  `- pending -> Inbox + origin snapshot
-                 |
-      +----------+-----------+
-      |          |           |
-   reject   read/discard    save
-      |          |           |
-      +----------+           v
-   SeenFingerprint      documents
-                        document_versions
-                        document_provenance
+   |- known unchanged -> fingerprint/provenance handling
+   `- changed/new     -> Inbox + current origins
+                              |
+                      Save / Reject / Read-discard
                               |
                               v
-                      Saved Library UI
+               documents + document_versions
+                    + document_provenance
                               |
-                      local offline detail
+                              v
+                     local formatted reader
 ```
+
+A publication disappearing from a source never deletes a saved document.
 
 ## Modules and boundaries
 
-- `app`: Android composition root, top-level navigation and explicit external-link intent.
-- `core:model`: platform-independent identities, source/discovery/content/document/read models.
-- `core:data`: repository contracts, including ownership-aware processing writes and read-only Library/Inbox projections.
-- `core:network`: HTTP transport primitives.
-- `collector:api`: collector/source adapter contracts.
-- `collector:rss`: RSS/Atom adapter.
-- `pipeline`: article processing, content decoding/extraction and Inbox user service.
-- `scheduler:core`: persisted collection orchestration and shared execution deadline.
-- `scheduler:android`: WorkManager integration.
+- `app`: Android composition root, top-level navigation, external-link intent, theme/settings integration.
+- `core:model`: source/discovery/content/document/read models including persisted representation metadata.
+- `core:data`: repository contracts; ownership-aware writes and read-only feature projections.
+- `core:network`: HTTP transport primitives and response limits.
+- `collector:api`: source adapter/discovery contracts.
+- `collector:rss`: implemented RSS/Atom source adapter.
+- future collector modules: concrete static-HTML/API/platform adapters only when their acquisition contracts exist.
+- `pipeline`: article decoding/extraction, representation hashing and Inbox lifecycle service.
+- `scheduler:core`: persisted collection orchestration and shared execution budget.
+- `scheduler:android`: WorkManager wake-up/integration.
 - `storage:database`: canonical Room schema, migrations, transactional DAOs and observable read DAOs.
-- `feature:inbox`: Inbox ViewModel/state/lazy paged UI; write actions delegate to `InboxService`.
-- `feature:library`: saved-library ViewModel/state/lazy paged UI and offline document detail.
-- `feature:sources`: source-management UI.
+- `feature:inbox`: pending list/read/decision UI; writes delegate to `InboxService`.
+- `feature:library`: local saved list/detail reader.
+- `feature:sources`: source add/preview/edit/pause/resume/error UI.
+- future `feature:search`: exact offline search over rebuildable indexes.
+- future `feature:settings`: user diagnostics, reading settings, archive/export controls.
 
-Feature modules do not own canonical writes. In particular, Library is read-only and Inbox UI cannot bypass `saveCurrent`/`discardCurrent` or article-processing ownership.
+Feature modules do not own canonical write shortcuts. Library remains read-only; Inbox cannot bypass `saveCurrent`/`discardCurrent`; future manual URL/Share adapters must enqueue into the same processing path.
 
-## Content decoding and parser identity
+## Source support contract
 
-`DefaultContentExtractor` applies this precedence:
+Source type declarations in models are not support claims. A source class becomes supported only when all are present:
 
-1. recognized BOM;
-2. charset from HTTP `Content-Type`;
-3. HTML/XML in-document charset metadata;
-4. UTF-8 fallback.
+- an acquisition/discovery implementation;
+- explicit URL/auth/pagination/rate/error semantics;
+- preview/validation UX where configuration can be ambiguous;
+- deterministic fixtures;
+- scheduler/ownership/retry/limit integration;
+- documented user-facing limitation/error behavior.
 
-The selected charset is decoded strictly. Unsupported charset names, malformed input and unmappable bytes fail extraction rather than silently producing replacement characters that could then be saved as valid content.
+Current implementation: RSS/Atom polling and article fetch.
 
-Current extracted Inbox content records `default-content-extractor-v2`. Schema v6 adds `inbox_items.parserVersion`; pending rows migrated from schema v5 are conservatively labelled `default-content-extractor-v1`. Save copies the Inbox value into `document_versions.parserVersion`. Existing saved versions are not rewritten automatically.
+Planned independent additions: one-shot HTML URL capture, RSS/Atom discovery from a site page, static HTML section discovery, then named structured-API/platform adapters as concrete contracts warrant them. Generic JavaScript-rendered/authenticated-site crawling is not claimed.
 
-## Saved document and provenance model
+## Content representation
 
-`documents` contains the current saved normalized text and document metadata. `document_versions` contains immutable saved text versions plus fetch time and parser version. This stage does not expose editing or complex version management.
+ADR 0007 chooses two coordinated forms.
 
-`document_provenance` is a historical snapshot. Each origin includes:
+### Canonical plain text
 
-- Source id;
-- source name snapshot;
-- source URL snapshot;
-- source type snapshot;
-- source-published/discovered URL;
-- final resolved URL after redirects when known;
-- discovery time;
-- fetch time.
+`normalizedText` remains durable for:
 
-Library detail reads these snapshots directly. Renaming or disabling a Source later does not rewrite historical provenance.
+- exact search/FTS;
+- list snippets;
+- text-only legacy compatibility;
+- inspection/export independent from rendering technology.
+
+### Safe formatted representation
+
+New formatted extraction may additionally persist:
+
+- `structuredContentFormat = safe-html-v1`;
+- sanitized `structuredContent` containing only passive reading semantics.
+
+`safe-html-v1` supports headings/paragraphs, ordered/unordered lists, block quotes, bold/emphasis, HTTP/HTTPS links, inline/preformatted code and tables. Active source content is stripped. Relative links are resolved against the final fetched page URL before persistence.
+
+The reader must not execute source scripts/forms/iframes or silently load remote resources. Link opening is explicit user action. Images are represented conservatively as inert metadata/placeholders until a bounded local-resource stage stores supported bytes in app-private storage.
+
+Legacy rows where structured fields are null are valid and render through text mode. Migration never re-downloads or guesses missing structure.
+
+## Parser and representation identity
+
+`ContentExtractor` is a version-aware contract. Every extractor must expose a durable parser identifier; an alternative extractor cannot be wired without one. The pipeline stores that exact identifier with the extracted Inbox row, and Save copies it unchanged to immutable `DocumentVersion`.
+
+For newly extracted `safe-html-v1` content, `contentHash` is representation-aware (domain-separated format id + deterministic sanitized HTML). Consequently a changed link target/table/code/formatting structure can be a new version even if normalized plain text is unchanged. Existing historical hashes are never rewritten only to adopt the policy.
+
+## Document/version model
+
+`documents` stores the current saved representation and metadata. `document_versions` stores immutable historical saved representations, fetch time and parser identity. `document_provenance` stores immutable origin snapshots.
+
+A new version is created only through the existing transactional Save/finalisation policy. Provenance merging does not destroy historical versions.
+
+## Offline image/resource policy
+
+Remote resources are not fetched by the saved reader. A later resource stage will introduce canonical local-resource records/files with:
+
+- stable id and owning document/version;
+- original URL, MIME, byte length and content hash;
+- app-private file storage;
+- per-resource/per-document byte and count limits;
+- safe supported image formats;
+- caption/alt metadata;
+- explicit placeholder behavior if bytes are absent/corrupt;
+- archive export/restore.
+
+Until then, image metadata can survive in safe content but the reader displays an offline placeholder and never falls back to remote loading.
 
 ## Library and Inbox read models
 
-The UI has separate read-only repository contracts from the transactional write path.
+Lists use stable keyset ordering and lightweight projections. Full body/structured content is loaded only for an opened material. Independent counts do not depend on loaded page size. Room invalidation drives refresh; failures are visible and retryable rather than translated to an empty list.
 
-Library list query returns only:
+Top-level product navigation target is Inbox / Library / Sources / Search / Settings. State that matters to the user (selected document, reading position/settings, unsaved source form) must be explicitly owned/restorable rather than depending on transient composable state.
 
-- document id;
-- title;
-- saved date;
-- short text snippet;
-- source count;
-- one source label for compact presentation.
+## Search and archive
 
-Full `normalizedText` and all provenance are fetched only for document detail.
+Exact offline search is implemented before semantic retrieval. FTS/index data is derived from canonical plain text/metadata and must be fully rebuildable after restore.
 
-Ordering is deterministic:
-
-- Library: `savedAt DESC, documentId DESC`;
-- Inbox: `createdAt DESC, inboxItemId DESC`.
-
-Paging is keyset-based, so equal timestamps do not create offset-related skips or duplicates. Total counts use independent `COUNT(*)` Flow queries and therefore do not depend on how many rows are currently loaded by the screen.
-
-Room invalidations update Flow consumers. `collectAsStateWithLifecycle` prevents the UI from maintaining a permanent polling loop while the application is backgrounded.
-
-## Offline-reading boundary
-
-A saved document is readable without network access because normalized text is stored locally. Opening the original URL or redirect URL is an explicit Android intent triggered only by the user.
-
-The archive guarantee is intentionally limited: Article Navigator does **not** currently claim to preserve the complete original HTML page, images, attachments, scripts or other remote assets. Temporary raw HTTP data exists for processing recovery and is removed after terminal processing; it is not the long-term archive format.
-
-## Schema and recovery
-
-Current schema version: **6**.
-
-Important compatibility/recovery guarantees remain covered by tests:
-
-- historical v1→v6 migration chain;
-- both known historical physical v4 variants migrate without destructive fallback;
-- v5→v6 preserves pending Inbox text and labels its parser version conservatively;
-- exact temporary raw bytes, Content-Type and resolved URL survive a file-backed database close/reopen;
-- expired article-processing owners cannot commit stale results;
-- failed terminal transactions roll back and remain recoverable;
-- saved text and provenance survive database reopen.
+Export/restore is a canonical archive path. Its versioned format must include documents, immutable versions, normalized text, structured content, provenance snapshots and local resource records/bytes once resources exist. Restoring must not require a proprietary service.
 
 ## Android background work
 
-WorkManager is a persistent wake-up mechanism, not an exact timer. Collection scheduling state and article-processing ownership live in SQLite.
+WorkManager is a persistent wake-up mechanism, not an exact timer. Source schedule state and processing ownership live in SQLite. Issue #18 separately tracks decoupling successful queue continuation from infrastructure retry/backoff history. Automatic-observation acceptance must account for that limitation until #18 is closed.
 
-The current worker uses a shared pass deadline for collection plus ingestion. A known scheduler limitation is tracked separately: successful queue continuation and infrastructure retry currently share WorkManager `runAttemptCount`/retry backoff. That refinement is deliberately outside the Library/offline-reading PR so UI/storage changes do not destabilize scheduling semantics.
+## Security boundaries
 
-## Planned derived capabilities
+- Only HTTP/HTTPS source/article links are accepted by generic public acquisition paths.
+- Persisted formatted content is sanitizer output, never original executable DOM.
+- Source JavaScript, forms, iframes/object/embed and event handlers are not executed.
+- Saved-reader network access is disabled for embedded resources; external navigation requires explicit user action.
+- Authentication-required adapters need a dedicated credential/session design before support can be claimed.
 
-The next independent product stages are:
+## Quality boundary
 
-1. exact offline full-text search (FTS) with deterministic rebuild/ranking tests;
-2. export and restore with round-trip compatibility tests;
-3. manual URL capture through Android Share;
-4. semantic/hybrid retrieval only after exact search and archive portability are proven.
-
-Any future FTS/vector/index data must remain rebuildable from canonical local text and metadata. Re-indexing may change derived indexes but must not rewrite saved provenance or historical parser/version records.
+Every functional PR must preserve ownership, transactional Inbox lifecycle and provenance guarantees; include deterministic fixtures/regressions; add schema migration/export when needed; and finish with exact-HEAD green tests, Room schema check, lint and assemble/APK gates. Physical-device/emulator or visual checks are reported explicitly when unavailable rather than inferred from unit/Robolectric coverage.
