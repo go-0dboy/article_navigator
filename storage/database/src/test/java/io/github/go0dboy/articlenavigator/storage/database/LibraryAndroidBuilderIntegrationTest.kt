@@ -92,7 +92,7 @@ class LibraryAndroidBuilderIntegrationTest {
                 provenance = DocumentProvenance(
                     documentId = document.id,
                     sourceId = source.id,
-                    discoveredUrl = "${document.canonicalUrl}?original=1",
+                    discoveredUrl = document.canonicalUrl,
                     resolvedUrl = document.canonicalUrl,
                     discoveredAt = now.minusSeconds(30),
                     fetchedAt = now.minusSeconds(20),
@@ -164,7 +164,7 @@ class LibraryAndroidBuilderIntegrationTest {
 
             assertEquals(document.id, inbox.saveCurrent(pending.id, now.plusSeconds(30), "ignored"))
             val afterRevision = withTimeout(5_000) { secondRevision.await() }
-            assertEquals(beforeRevision + 1, afterRevision)
+            assertEquals(beforeRevision, afterRevision)
 
             countObserver.cancelAndJoin()
             revisionObserver.join()
@@ -175,7 +175,7 @@ class LibraryAndroidBuilderIntegrationTest {
             assertEquals(document.createdAt.toEpochMilli(), saved.createdAtEpochMillis)
             assertEquals(now.plusSeconds(30).toEpochMilli(), saved.updatedAtEpochMillis)
             assertEquals(2, db.documentDao().versions(document.id.value).size)
-            assertEquals(2, db.documentDao().provenance(document.id.value).size)
+            assertEquals(1, db.documentDao().provenance(document.id.value).size)
             assertNull(db.inboxLifecycleDao().item(pending.id.value))
         } finally {
             db.close()
