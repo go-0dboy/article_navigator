@@ -7,6 +7,7 @@ import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.LibraryItem
 import io.github.go0dboy.articlenavigator.core.model.LibraryPageKey
 import io.github.go0dboy.articlenavigator.core.model.SavedDocument
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,21 +61,22 @@ class LibraryViewModel(
             pagingMutex.withLock {
                 if (_state.value.loading || _state.value.loadingMore || !_state.value.hasMore) return@withLock
                 _state.update { it.copy(loadingMore = true, error = null) }
-                runCatching { repository.loadPage(nextKey, PAGE_SIZE + 1) }
-                    .onSuccess { raw ->
-                        val page = raw.take(PAGE_SIZE)
-                        nextKey = page.lastOrNull()?.let { LibraryPageKey(it.savedAt, it.id) }
-                        _state.update { current ->
-                            current.copy(
-                                items = (current.items + page).distinctBy { it.id },
-                                loadingMore = false,
-                                hasMore = raw.size > PAGE_SIZE,
-                            )
-                        }
+                try {
+                    val raw = repository.loadPage(nextKey, PAGE_SIZE + 1)
+                    val page = raw.take(PAGE_SIZE)
+                    nextKey = page.lastOrNull()?.let { LibraryPageKey(it.savedAt, it.id) }
+                    _state.update { current ->
+                        current.copy(
+                            items = (current.items + page).distinctBy { it.id },
+                            loadingMore = false,
+                            hasMore = raw.size > PAGE_SIZE,
+                        )
                     }
-                    .onFailure { error ->
-                        _state.update { it.copy(loadingMore = false, error = error.message ?: "Не удалось загрузить библиотеку") }
-                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    _state.update { it.copy(loadingMore = false, error = error.message ?: "Не удалось загрузить библиотеку") }
+                }
             }
         }
     }
@@ -105,30 +107,31 @@ class LibraryViewModel(
         pagingMutex.withLock {
             val showSpinner = _state.value.items.isEmpty()
             _state.update { it.copy(loading = showSpinner, error = null) }
-            runCatching { repository.loadPage(after = null, limit = PAGE_SIZE + 1) }
-                .onSuccess { raw ->
-                    val page = raw.take(PAGE_SIZE)
-                    nextKey = page.lastOrNull()?.let { LibraryPageKey(it.savedAt, it.id) }
-                    _state.update {
-                        it.copy(
-                            items = page,
-                            loading = false,
-                            loadingMore = false,
-                            hasMore = raw.size > PAGE_SIZE,
-                            error = null,
-                        )
-                    }
+            try {
+                val raw = repository.loadPage(after = null, limit = PAGE_SIZE + 1)
+                val page = raw.take(PAGE_SIZE)
+                nextKey = page.lastOrNull()?.let { LibraryPageKey(it.savedAt, it.id) }
+                _state.update {
+                    it.copy(
+                        items = page,
+                        loading = false,
+                        loadingMore = false,
+                        hasMore = raw.size > PAGE_SIZE,
+                        error = null,
+                    )
                 }
-                .onFailure { error ->
-                    nextKey = null
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            loadingMore = false,
-                            error = error.message ?: "Не удалось загрузить библиотеку",
-                        )
-                    }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                nextKey = null
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        loadingMore = false,
+                        error = error.message ?: "Не удалось загрузить библиотеку",
+                    )
                 }
+            }
         }
     }
 
