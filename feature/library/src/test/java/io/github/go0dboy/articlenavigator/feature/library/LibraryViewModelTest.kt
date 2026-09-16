@@ -47,7 +47,7 @@ class LibraryViewModelTest {
                 savedAt = BASE.plusSeconds(60),
                 snippet = "new",
                 sourceCount = 1,
-                sourceLabel = "Background",
+                primarySourceName = "Background",
             )
             repository.replace(repository.rows + newest)
             advanceUntilIdle()
@@ -133,7 +133,7 @@ class LibraryViewModelTest {
                 savedAt = BASE,
                 snippet = "Snippet $suffix",
                 sourceCount = 1,
-                sourceLabel = "Source",
+                primarySourceName = "Source",
             )
         }
     }
