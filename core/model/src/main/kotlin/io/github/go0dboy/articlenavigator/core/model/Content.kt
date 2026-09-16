@@ -21,6 +21,12 @@ enum class ContentDisposition {
 object ContentParserVersions {
     const val DEFAULT_EXTRACTOR_V1: String = "default-content-extractor-v1"
     const val DEFAULT_EXTRACTOR_V2: String = "default-content-extractor-v2"
+    const val DEFAULT_EXTRACTOR_V3: String = "default-content-extractor-v3"
+}
+
+/** Stable persisted structured-content format identifiers. */
+object ContentFormats {
+    const val SAFE_HTML_V1: String = "safe-html-v1"
 }
 
 /**
@@ -76,8 +82,12 @@ data class InboxItem(
     val contentHash: String,
     val createdAt: Instant,
     val updatedAt: Instant,
-    /** Parser that produced [normalizedText]; Save must preserve this value, not the current app version. */
+    /** Parser that produced the persisted content; Save must preserve it unchanged. */
     val parserVersion: String = ContentParserVersions.DEFAULT_EXTRACTOR_V2,
+    /** Null for legacy/text-only content. */
+    val structuredContentFormat: String? = null,
+    /** Sanitized/versioned formatted representation. Null for legacy/text-only content. */
+    val structuredContent: String? = null,
 )
 
 /** Provenance snapshot captured when a discovery is attached to Inbox. */
@@ -107,6 +117,9 @@ data class Document(
     val createdAt: Instant,
     val updatedAt: Instant,
     val disposition: ContentDisposition,
+    /** Current structured representation, null for legacy/text-only documents. */
+    val structuredContentFormat: String? = null,
+    val structuredContent: String? = null,
 )
 
 data class DocumentVersion(
@@ -116,6 +129,9 @@ data class DocumentVersion(
     val normalizedText: String,
     val fetchedAt: Instant,
     val parserVersion: String,
+    /** Immutable structured representation for this version, when one existed at extraction time. */
+    val structuredContentFormat: String? = null,
+    val structuredContent: String? = null,
 )
 
 /** Durable snapshot of where a saved document came from. */

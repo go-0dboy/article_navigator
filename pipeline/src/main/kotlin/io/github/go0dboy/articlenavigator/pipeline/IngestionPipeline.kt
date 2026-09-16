@@ -208,7 +208,10 @@ class IngestionPipeline(
             return skip(lease, canonicalUrl, error.message ?: "Content cannot be extracted")
         }
 
-        val contentHash = sha256(extracted.normalizedText)
+        require(
+            (extracted.structuredContentFormat == null) == (extracted.structuredContent == null),
+        ) { "Extractor returned incomplete structured-content metadata" }
+        val contentHash = contentHash(extracted)
         val fetchedMarkedAt = clock.instant()
         if (
             !ingestionRepository.markFetched(
@@ -237,6 +240,9 @@ class IngestionPipeline(
                     contentHash = contentHash,
                     createdAt = finalisedAt,
                     updatedAt = finalisedAt,
+                    parserVersion = extractor.parserVersion,
+                    structuredContentFormat = extracted.structuredContentFormat,
+                    structuredContent = extracted.structuredContent,
                 ),
                 origin = InboxOrigin(
                     inboxItemId = inboxId,
@@ -300,6 +306,17 @@ class IngestionPipeline(
     private suspend fun releaseBestEffort(lease: ArticleProcessingLease) {
         withContext(NonCancellable) {
             runCatching { ingestionRepository.releaseProcessing(lease) }
+        }
+    }
+
+    private fun contentHash(extracted: ExtractedContent): String {
+        val format = extracted.structuredContentFormat
+        val structured = extracted.structuredContent
+        return if (format != null && structured != null) {
+            sha256("structured\u0000$format\u0000$structured")
+        } else {
+            // Preserve the historical hash contract for legacy/text-only extractors.
+            sha256(extracted.normalizedText)
         }
     }
 
