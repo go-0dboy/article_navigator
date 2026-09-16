@@ -78,6 +78,12 @@ class MigrationFullChainV5Test {
                 assertForeignKeyDeleteAction(connection, "inbox_origins", "sources", "RESTRICT")
                 assertForeignKeyDeleteAction(connection, "document_provenance", "sources", "RESTRICT")
                 assertForeignKeyDeleteAction(connection, "seen_fingerprints", "sources", "RESTRICT")
+
+                // MigrationTestHelper's raw SQLiteConnection does not enable FK enforcement for
+                // arbitrary direct SQL. Turn it on explicitly before asserting runtime delete
+                // behaviour; the three checks above already validate the migrated FK metadata.
+                execute(connection, "PRAGMA foreign_keys = ON")
+                assertEquals(1L, scalarLong(connection, "PRAGMA foreign_keys"))
                 assertTrue(runCatching { execute(connection, "DELETE FROM sources WHERE id='source-1'") }.isFailure)
                 connection.close()
             }
