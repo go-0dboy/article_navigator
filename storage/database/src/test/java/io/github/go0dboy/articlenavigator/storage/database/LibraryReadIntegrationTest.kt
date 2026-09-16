@@ -21,18 +21,17 @@ import io.github.go0dboy.articlenavigator.core.model.SourceId
 import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Duration
 import java.time.Instant
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -171,11 +170,22 @@ class LibraryReadIntegrationTest {
         persist(document, source, provenance(document, source, document.canonicalUrl, now.minusSeconds(1)))
         assertEquals(1, library.observeSavedCount().first())
 
-        val emissions = Channel<Long>(capacity = 2)
-        val collector = launch(start = CoroutineStart.UNDISPATCHED) {
-            library.observeRevision().take(2).collect { emissions.send(it) }
+        val firstEmission = CompletableDeferred<Long>()
+        val secondEmission = CompletableDeferred<Long>()
+        val collector = launch(Dispatchers.Default) {
+            var emissionIndex = 0
+            library.observeRevision().take(2).collect { revision ->
+                if (emissionIndex++ == 0) {
+                    firstEmission.complete(revision)
+                } else {
+                    secondEmission.complete(revision)
+                }
+            }
         }
-        val firstRevision = withTimeout(5_000) { emissions.receive() }
+
+        val firstRevision = withContext(Dispatchers.Default) {
+            withTimeout(5_000) { firstEmission.await() }
+        }
 
         database.documentDao().upsert(
             document.copy(
@@ -186,11 +196,13 @@ class LibraryReadIntegrationTest {
             ).toEntity(),
         )
 
-        val secondRevision = withTimeout(5_000) { emissions.receive() }
+        val secondRevision = withContext(Dispatchers.Default) {
+            withTimeout(5_000) { secondEmission.await() }
+        }
         collector.join()
 
-        // Room invalidation must emit even though the lightweight scalar revision value can stay
-        // equal when only existing row contents change.
+        // The scalar value is intentionally count-based, but Room must still re-emit it when an
+        // observed table is invalidated by an in-place document update.
         assertEquals(firstRevision, secondRevision)
         assertEquals(1, library.observeSavedCount().first())
         val updated = library.loadPage(null, 10).single()
