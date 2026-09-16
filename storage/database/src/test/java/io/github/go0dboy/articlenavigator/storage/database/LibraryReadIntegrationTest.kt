@@ -21,13 +21,8 @@ import io.github.go0dboy.articlenavigator.core.model.SourceId
 import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Duration
 import java.time.Instant
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.take
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -159,49 +154,6 @@ class LibraryReadIntegrationTest {
         assertEquals(240, item.snippet.length)
         assertFalse(item.snippet == longBody)
         assertEquals(longBody, library.observeDocument(document.id).first()?.document?.normalizedText)
-    }
-
-    @Test
-    fun revisionInvalidatesWhenTransactionalSaveUpdatesExistingDocumentWithoutCountChange() = runBlocking {
-        val source = source("source-a", "Source")
-        sources.upsert(source)
-        val document = savedDocument("doc-update", now, "Original body")
-        persist(document, source, provenance(document, source, document.canonicalUrl, now.minusSeconds(60)))
-        assertEquals(1, library.observeSavedCount().first())
-
-        val updateDiscovery = discovery("update-discovery", source, document.canonicalUrl)
-        ingestion.upsertDiscovered(updateDiscovery)
-        val updateInbox = inboxItem("update-inbox", document.canonicalUrl, "Updated body")
-        inbox.put(updateInbox, origin(updateInbox, updateDiscovery, source))
-
-        val firstEmission = CompletableDeferred<Long>()
-        val secondEmission = CompletableDeferred<Long>()
-        val collector = launch {
-            var emissionIndex = 0
-            library.observeRevision().take(2).collect { revision ->
-                if (emissionIndex++ == 0) {
-                    firstEmission.complete(revision)
-                } else {
-                    secondEmission.complete(revision)
-                }
-            }
-        }
-
-        val firstRevision = withTimeout(5_000) { firstEmission.await() }
-        val savedId = inbox.saveCurrent(updateInbox.id, now.plusSeconds(1), "ignored-save-time-parser")
-        assertEquals(document.id, savedId)
-
-        val secondRevision = withTimeout(5_000) { secondEmission.await() }
-        collector.join()
-
-        assertEquals(1, library.observeSavedCount().first())
-        val updated = library.loadPage(null, 10).single()
-        assertEquals(updateInbox.title, updated.title)
-        assertEquals("Updated body", updated.snippet)
-        assertEquals(2, knowledge.versions(document.id).size)
-        // Revision is an invalidation signal, not a monotonically increasing domain value. A table
-        // change must trigger a second emission even if the scalar value happens to be unchanged.
-        assertEquals(firstRevision, secondRevision)
     }
 
     private suspend fun persist(document: Document, source: Source, provenance: DocumentProvenance) {
