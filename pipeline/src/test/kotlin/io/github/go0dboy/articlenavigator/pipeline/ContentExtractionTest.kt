@@ -1,5 +1,6 @@
 package io.github.go0dboy.articlenavigator.pipeline
 
+import java.nio.charset.Charset
 import java.util.Base64
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -92,6 +93,25 @@ class ContentExtractionTest {
 
         assertEquals("Внутренняя кодировка", result.title)
         assertEquals("Текст из meta.", result.normalizedText)
+    }
+
+    @Test
+    fun `http charset overrides conflicting document metadata`() {
+        val body = """
+            <html>
+              <head><meta charset="utf-8"><title>HTTP важнее</title></head>
+              <body><article>Точный текст CP1251.</article></body>
+            </html>
+        """.trimIndent().toByteArray(Charset.forName("windows-1251"))
+
+        val result = extractor.extract(
+            body,
+            "text/html; charset=windows-1251",
+            "https://example.test/http-over-meta",
+        )
+
+        assertEquals("HTTP важнее", result.title)
+        assertEquals("Точный текст CP1251.", result.normalizedText)
     }
 
     @Test
