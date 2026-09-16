@@ -90,9 +90,19 @@ fun LibraryScreen(
             onOpenExternal = onOpenExternal,
             modifier = modifier,
         )
-        state.detailError != null -> ErrorState(state.detailError, onCloseDocument, modifier)
+        state.detailError != null -> ErrorState(
+            message = state.detailError,
+            actionLabel = "В библиотеку",
+            onAction = onCloseDocument,
+            modifier = modifier,
+        )
         state.loading -> LoadingState("Загружаю библиотеку…", modifier)
-        state.error != null && state.items.isEmpty() -> ErrorState(state.error, onRetry, modifier)
+        state.error != null && state.items.isEmpty() -> ErrorState(
+            message = state.error,
+            actionLabel = "Повторить",
+            onAction = onRetry,
+            modifier = modifier,
+        )
         state.items.isEmpty() -> EmptyLibrary(modifier)
         else -> LibraryList(
             state = state,
@@ -231,10 +241,15 @@ private fun EmptyLibrary(modifier: Modifier) {
 }
 
 @Composable
-private fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier) {
+private fun ErrorState(
+    message: String,
+    actionLabel: String,
+    onAction: () -> Unit,
+    modifier: Modifier,
+) {
     Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(message, color = MaterialTheme.colorScheme.error)
-        Button(onClick = onRetry) { Text("Повторить") }
+        Button(onClick = onAction) { Text(actionLabel) }
     }
 }
 
