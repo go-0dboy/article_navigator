@@ -1,5 +1,6 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
+import androidx.room3.ExperimentalRoomApi
 import androidx.room3.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
@@ -58,10 +59,63 @@ class LibraryConnectionPoolIntegrationTest {
     }
 
     @Test
+    fun savedCountObserverAllowsDirectDocumentUpdate() = runBlocking {
+        withDatabaseFile("direct-update") { file ->
+            withOpenDatabase(file, singleConnection = false) { db ->
+                val fixture = seedExistingDocumentUpdate(db, "direct-update")
+                val library = RoomLibraryRepository(db.libraryReadDao())
+                val lifecycle = db.inboxLifecycleDao()
+                val existing = checkNotNull(lifecycle.documentByCanonicalUrl(fixture.canonicalUrl))
+                val firstEmission = CompletableDeferred<Unit>()
+                val observer = launch {
+                    library.observeSavedCount().collect {
+                        firstEmission.complete(Unit)
+                    }
+                }
+
+                withTimeout(5_000) { firstEmission.await() }
+                assertEquals(
+                    1,
+                    lifecycle.updateDocument(
+                        existing.copy(
+                            title = "Direct update",
+                            updatedAtEpochMillis = now.plusSeconds(30).toEpochMilli(),
+                        ),
+                    ),
+                )
+                observer.cancelAndJoin()
+            }
+        }
+    }
+
+    @Test
     fun revisionObserverAllowsExistingDocumentSaveWithSingleConnectionPool() = runBlocking {
         withDatabaseFile("revision-single") { file ->
             withOpenDatabase(file, singleConnection = true) { db ->
                 val fixture = seedExistingDocumentUpdate(db, "revision-single")
+                val library = RoomLibraryRepository(db.libraryReadDao())
+                val firstEmission = CompletableDeferred<Unit>()
+                val observer = launch {
+                    library.observeRevision().collect {
+                        firstEmission.complete(Unit)
+                    }
+                }
+
+                withTimeout(5_000) { firstEmission.await() }
+                assertEquals(
+                    fixture.documentId,
+                    fixture.inbox.saveCurrent(fixture.inboxId, now.plusSeconds(30), "ignored"),
+                )
+                observer.cancelAndJoin()
+            }
+        }
+    }
+
+    @Test
+    fun revisionObserverAllowsExistingDocumentSaveWithPersistedInvalidationTracking() = runBlocking {
+        withDatabaseFile("revision-persisted-tracking") { file ->
+            withOpenDatabase(file, singleConnection = false, inMemoryTracking = false) { db ->
+                val fixture = seedExistingDocumentUpdate(db, "revision-persisted-tracking")
                 val library = RoomLibraryRepository(db.libraryReadDao())
                 val firstEmission = CompletableDeferred<Unit>()
                 val observer = launch {
@@ -175,12 +229,18 @@ class LibraryConnectionPoolIntegrationTest {
                 sourceTypeSnapshot = source.type.name,
             ),
         )
-        return Fixture(document.id, update.id, inbox)
+        return Fixture(document.id, document.canonicalUrl, update.id, inbox)
     }
 
-    private fun openDatabase(file: Path, singleConnection: Boolean): ArticleNavigatorDatabase {
+    @OptIn(ExperimentalRoomApi::class)
+    private fun openDatabase(
+        file: Path,
+        singleConnection: Boolean,
+        inMemoryTracking: Boolean = true,
+    ): ArticleNavigatorDatabase {
         val builder = Room.databaseBuilder<ArticleNavigatorDatabase>(file.toAbsolutePath().toString())
             .setDriver(BundledSQLiteDriver())
+            .setInMemoryTrackingMode(inMemoryTracking)
         if (singleConnection) {
             builder.setSingleConnectionPool()
         }
@@ -190,9 +250,10 @@ class LibraryConnectionPoolIntegrationTest {
     private suspend fun <T> withOpenDatabase(
         file: Path,
         singleConnection: Boolean,
+        inMemoryTracking: Boolean = true,
         block: suspend (ArticleNavigatorDatabase) -> T,
     ): T {
-        val database = openDatabase(file, singleConnection)
+        val database = openDatabase(file, singleConnection, inMemoryTracking)
         return try {
             block(database)
         } finally {
@@ -214,6 +275,7 @@ class LibraryConnectionPoolIntegrationTest {
 
     private data class Fixture(
         val documentId: DocumentId,
+        val canonicalUrl: String,
         val inboxId: InboxItemId,
         val inbox: RoomInboxRepository,
     )
