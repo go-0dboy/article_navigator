@@ -32,6 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.feature.inbox.InboxActions
@@ -72,10 +75,18 @@ private fun ArticleNavigatorApp(container: AppContainer) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    val inboxCountFlow = remember(container) { container.inboxPagingRepository.observePendingCount() }
-    val libraryCountFlow = remember(container) { container.libraryRepository.observeSavedCount() }
-    val inboxCount by inboxCountFlow.collectAsStateWithLifecycle(initialValue = 0)
-    val libraryCount by libraryCountFlow.collectAsStateWithLifecycle(initialValue = 0)
+    val countsFactory = remember(container) {
+        viewModelFactory {
+            initializer {
+                AppCountsViewModel(
+                    inboxRepository = container.inboxPagingRepository,
+                    libraryRepository = container.libraryRepository,
+                )
+            }
+        }
+    }
+    val countsViewModel: AppCountsViewModel = viewModel(factory = countsFactory)
+    val countsState by countsViewModel.state.collectAsStateWithLifecycle()
 
     val inboxActions = remember(container) {
         object : InboxActions {
@@ -133,10 +144,25 @@ private fun ArticleNavigatorApp(container: AppContainer) {
             )
             SectionSelector(
                 selected = section,
-                inboxCount = inboxCount,
-                libraryCount = libraryCount,
+                inboxCount = countsState.inboxCount,
+                libraryCount = countsState.libraryCount,
                 onSelected = { sectionName = it.name },
             )
+            countsState.observationError?.let { error ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "Счётчики не обновляются: $error",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedButton(onClick = countsViewModel::retry) {
+                        Text("Повторить")
+                    }
+                }
+            }
 
             when (section) {
                 AppSection.SOURCES -> SourcesScreen(
@@ -212,8 +238,8 @@ private fun ArticleNavigatorApp(container: AppContainer) {
 @Composable
 private fun SectionSelector(
     selected: AppSection,
-    inboxCount: Int,
-    libraryCount: Int,
+    inboxCount: Int?,
+    libraryCount: Int?,
     onSelected: (AppSection) -> Unit,
 ) {
     Row(
@@ -229,13 +255,13 @@ private fun SectionSelector(
         SectionButton(
             modifier = Modifier.weight(1f),
             selected = selected == AppSection.INBOX,
-            text = "Inbox ($inboxCount)",
+            text = "Inbox (${inboxCount ?: "?"})",
             onClick = { onSelected(AppSection.INBOX) },
         )
         SectionButton(
             modifier = Modifier.weight(1f),
             selected = selected == AppSection.LIBRARY,
-            text = "Библиотека ($libraryCount)",
+            text = "Библиотека (${libraryCount ?: "?"})",
             onClick = { onSelected(AppSection.LIBRARY) },
         )
         SectionButton(
