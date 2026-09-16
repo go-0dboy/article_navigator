@@ -113,15 +113,16 @@ class InboxLifecyclePersistenceTest {
     }
 
     @Test
-    fun saveCurrentAtomicallyPromotesInboxContentAndIngestionSnapshotIntoKnowledge() = runTest {
+    fun saveCurrentPreservesParserVersionCapturedAtExtraction() = runTest {
         sources.upsert(source)
         val discovery = discovery("item-3", "https://example.test/save")
         ingestion.upsertDiscovered(discovery)
-        val item = inboxItem("inbox-3", discovery.url)
+        val item = inboxItem("inbox-3", discovery.url).copy(parserVersion = "parser-at-extraction")
         val itemOrigin = origin(item.id, discovery)
         inbox.put(item, itemOrigin)
 
-        val documentId = inbox.saveCurrent(item.id, now, "parser-v1")
+        // Deliberately different: Save-time application version must not relabel old extracted text.
+        val documentId = inbox.saveCurrent(item.id, now, "parser-at-save")
 
         assertNotNull(documentId)
         assertNull(inbox.findById(item.id))
@@ -134,7 +135,7 @@ class InboxLifecyclePersistenceTest {
         val versions = knowledge.versions(documentId)
         assertEquals(1, versions.size)
         assertEquals(item.normalizedText, versions.single().normalizedText)
-        assertEquals("parser-v1", versions.single().parserVersion)
+        assertEquals("parser-at-extraction", versions.single().parserVersion)
 
         val provenances = knowledge.provenance(documentId)
         assertEquals(1, provenances.size)
@@ -149,7 +150,7 @@ class InboxLifecyclePersistenceTest {
         assertEquals(ContentDisposition.SAVED, fingerprint?.disposition)
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.findDiscoveredById(discovery.id)?.status)
         assertNull(ingestion.loadRawContent(discovery.id))
-        assertNull(inbox.saveCurrent(item.id, now.plusSeconds(1), "parser-v1"))
+        assertNull(inbox.saveCurrent(item.id, now.plusSeconds(1), "another-parser"))
     }
 
     private fun discovery(id: String, url: String) = DiscoveredItem(
