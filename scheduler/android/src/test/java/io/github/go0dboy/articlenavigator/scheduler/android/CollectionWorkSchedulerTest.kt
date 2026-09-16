@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import android.util.Log
 import androidx.work.Configuration
-import androidx.work.ListenableWorker
 import androidx.work.NetworkType
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -32,7 +31,7 @@ class CollectionWorkSchedulerTest {
 
     @Before
     fun setUp() {
-        application = RuntimeEnvironment.getApplication()
+        application = RuntimeEnvironment.getApplication() as CollectionWorkTestApplication
         context = application
         application.dependencies = successfulDependencies()
         val configuration = Configuration.Builder()
@@ -78,8 +77,10 @@ class CollectionWorkSchedulerTest {
 
         assertNotEquals(firstId, secondId)
         val manager = WorkManager.getInstance(context)
-        assertEquals(WorkInfo.State.CANCELLED, manager.getWorkInfoById(firstId).get().state)
-        assertEquals(WorkInfo.State.ENQUEUED, manager.getWorkInfoById(secondId).get().state)
+        val firstInfo = checkNotNull(manager.getWorkInfoById(firstId).get())
+        val secondInfo = checkNotNull(manager.getWorkInfoById(secondId).get())
+        assertEquals(WorkInfo.State.CANCELLED, firstInfo.state)
+        assertEquals(WorkInfo.State.ENQUEUED, secondInfo.state)
         assertEquals(
             secondId,
             manager.getWorkInfosForUniqueWork(CollectionWorkScheduler.IMMEDIATE_WORK_NAME).get().single().id,
@@ -92,7 +93,8 @@ class CollectionWorkSchedulerTest {
 
         CollectionWorkScheduler.cancelImmediate(context)
 
-        assertEquals(WorkInfo.State.CANCELLED, WorkManager.getInstance(context).getWorkInfoById(id).get().state)
+        val info = checkNotNull(WorkManager.getInstance(context).getWorkInfoById(id).get())
+        assertEquals(WorkInfo.State.CANCELLED, info.state)
     }
 
     @Test
