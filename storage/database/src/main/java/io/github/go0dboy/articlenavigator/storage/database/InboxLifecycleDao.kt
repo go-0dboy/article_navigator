@@ -66,7 +66,7 @@ interface InboxLifecycleDao {
      *
      * [parserVersion] is retained in the API for source compatibility only. The durable version is
      * the parserVersion stored with the Inbox row when extraction completed; Save must never relabel
-     * previously extracted text with the currently running application parser.
+     * previously extracted text/structure with the currently running application parser.
      */
     @Transaction
     suspend fun saveCurrent(
@@ -95,6 +95,8 @@ interface InboxLifecycleDao {
                     createdAtEpochMillis = atEpochMillis,
                     updatedAtEpochMillis = atEpochMillis,
                     disposition = "SAVED",
+                    structuredContentFormat = inbox.structuredContentFormat,
+                    structuredContent = inbox.structuredContent,
                 ),
             )
             upsertVersion(
@@ -105,6 +107,8 @@ interface InboxLifecycleDao {
                     normalizedText = inbox.normalizedText,
                     fetchedAtEpochMillis = currentOrigins.maxOf { it.fetchedAtEpochMillis },
                     parserVersion = inbox.parserVersion,
+                    structuredContentFormat = inbox.structuredContentFormat,
+                    structuredContent = inbox.structuredContent,
                 ),
             )
         } else {
@@ -120,6 +124,8 @@ interface InboxLifecycleDao {
                             contentHash = inbox.contentHash,
                             updatedAtEpochMillis = atEpochMillis,
                             disposition = "SAVED",
+                            structuredContentFormat = inbox.structuredContentFormat,
+                            structuredContent = inbox.structuredContent,
                         ),
                     ) == 1,
                 ) { "Saved document $documentId changed during Inbox save" }
@@ -131,6 +137,8 @@ interface InboxLifecycleDao {
                         normalizedText = inbox.normalizedText,
                         fetchedAtEpochMillis = currentOrigins.maxOf { it.fetchedAtEpochMillis },
                         parserVersion = inbox.parserVersion,
+                        structuredContentFormat = inbox.structuredContentFormat,
+                        structuredContent = inbox.structuredContent,
                     ),
                 )
             }

@@ -124,6 +124,8 @@ data class InboxItemEntity(
     val updatedAtEpochMillis: Long,
     @ColumnInfo(defaultValue = "'default-content-extractor-v1'")
     val parserVersion: String = "default-content-extractor-v1",
+    val structuredContentFormat: String? = null,
+    val structuredContent: String? = null,
 )
 
 @Entity(
@@ -163,6 +165,8 @@ data class DocumentEntity(
     val createdAtEpochMillis: Long,
     val updatedAtEpochMillis: Long,
     val disposition: String,
+    val structuredContentFormat: String? = null,
+    val structuredContent: String? = null,
 )
 
 @Entity(
@@ -178,6 +182,8 @@ data class DocumentVersionEntity(
     val normalizedText: String,
     val fetchedAtEpochMillis: Long,
     val parserVersion: String,
+    val structuredContentFormat: String? = null,
+    val structuredContent: String? = null,
 )
 
 @Entity(
