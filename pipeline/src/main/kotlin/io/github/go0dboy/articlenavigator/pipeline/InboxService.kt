@@ -35,6 +35,7 @@ class InboxService(
         repository.discardCurrent(id, disposition, clock.instant())
 
     companion object {
-        const val PARSER_VERSION: String = "default-content-extractor-v1"
+        /** New saves record the strict charset-aware extractor. Existing versions are not rewritten. */
+        const val PARSER_VERSION: String = "default-content-extractor-v2"
     }
 }
