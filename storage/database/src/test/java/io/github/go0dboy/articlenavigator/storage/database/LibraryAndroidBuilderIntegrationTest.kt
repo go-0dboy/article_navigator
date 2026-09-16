@@ -26,10 +26,12 @@ import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -41,7 +43,7 @@ class LibraryAndroidBuilderIntegrationTest {
     private val now = Instant.parse("2026-09-16T11:00:00Z")
 
     @Test
-    fun activeLibraryObserverDoesNotBlockExistingDocumentSaveThroughAndroidBuilder() = runBlocking {
+    fun activeLibraryObserversDoNotBlockExistingDocumentSaveThroughProductionStyleAndroidBuilder() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val name = "library-android-builder-${UUID.randomUUID()}.db"
         context.deleteDatabase(name)
@@ -145,14 +147,36 @@ class LibraryAndroidBuilderIntegrationTest {
                 ),
             )
 
-            val firstEmission = CompletableDeferred<Unit>()
-            val observer = launch {
-                library.observeSavedCount().collect { firstEmission.complete(Unit) }
+            val firstCount = CompletableDeferred<Int>()
+            val firstRevision = CompletableDeferred<Long>()
+            val secondRevision = CompletableDeferred<Long>()
+            val countObserver = launch {
+                library.observeSavedCount().collect { count -> firstCount.complete(count) }
             }
-            withTimeout(5_000) { firstEmission.await() }
+            val revisionObserver = launch {
+                var index = 0
+                library.observeRevision().take(2).collect { revision ->
+                    if (index++ == 0) firstRevision.complete(revision) else secondRevision.complete(revision)
+                }
+            }
+            assertEquals(1, withTimeout(5_000) { firstCount.await() })
+            val beforeRevision = withTimeout(5_000) { firstRevision.await() }
 
             assertEquals(document.id, inbox.saveCurrent(pending.id, now.plusSeconds(30), "ignored"))
-            observer.cancelAndJoin()
+            val afterRevision = withTimeout(5_000) { secondRevision.await() }
+            assertEquals(beforeRevision, afterRevision)
+
+            countObserver.cancelAndJoin()
+            revisionObserver.join()
+
+            val saved = checkNotNull(db.documentDao().findById(document.id.value))
+            assertEquals("After", saved.title)
+            assertEquals("After body", saved.normalizedText)
+            assertEquals(document.createdAt.toEpochMilli(), saved.createdAtEpochMillis)
+            assertEquals(now.plusSeconds(30).toEpochMilli(), saved.updatedAtEpochMillis)
+            assertEquals(2, db.documentDao().versions(document.id.value).size)
+            assertEquals(2, db.documentDao().provenance(document.id.value).size)
+            assertNull(db.inboxLifecycleDao().item(pending.id.value))
         } finally {
             db.close()
             context.deleteDatabase(name)
