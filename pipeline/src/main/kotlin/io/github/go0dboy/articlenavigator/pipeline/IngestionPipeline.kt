@@ -88,9 +88,7 @@ class IngestionPipeline(
             val outcome = try {
                 processOne(lease)
             } catch (error: CancellationException) {
-                withContext(NonCancellable) {
-                    runCatching { ingestionRepository.releaseProcessing(lease) }
-                }
+                releaseBestEffort(lease)
                 throw error
             }
             when (outcome) {
@@ -102,6 +100,28 @@ class IngestionPipeline(
                 Outcome.STALE -> stale++
             }
         }
+
+        // Reaching the per-pass item cap is only exhaustion when more eligible persisted work
+        // actually exists. Probe with the same ownership protocol, then immediately release the
+        // probe lease so no queue item is consumed or stranded merely to detect continuation.
+        if (!budgetExhausted && claimed == limit) {
+            val probeAt = clock.instant()
+            if (!probeAt.isBefore(effectiveDeadline)) {
+                budgetExhausted = true
+            } else {
+                val probe = ingestionRepository.tryClaimNext(
+                    runToken = UUID.randomUUID().toString(),
+                    now = probeAt,
+                    leaseExpiresAt = probeAt.plus(processingLeaseDuration),
+                    isUnmeteredNetwork = isUnmeteredNetwork,
+                )
+                if (probe != null) {
+                    budgetExhausted = true
+                    releaseBestEffort(probe)
+                }
+            }
+        }
+
         return IngestionReport(claimed, added, merged, known, failed, skipped, stale, budgetExhausted)
     }
 
@@ -267,6 +287,12 @@ class IngestionPipeline(
             at = at,
         )
         return if (applied) Outcome.SKIPPED else Outcome.STALE
+    }
+
+    private suspend fun releaseBestEffort(lease: ArticleProcessingLease) {
+        withContext(NonCancellable) {
+            runCatching { ingestionRepository.releaseProcessing(lease) }
+        }
     }
 
     private fun isRetryableHttpStatus(statusCode: Int): Boolean =
