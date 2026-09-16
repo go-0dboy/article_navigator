@@ -164,7 +164,7 @@ class LibraryAndroidBuilderIntegrationTest {
 
             assertEquals(document.id, inbox.saveCurrent(pending.id, now.plusSeconds(30), "ignored"))
             val afterRevision = withTimeout(5_000) { secondRevision.await() }
-            assertEquals(beforeRevision, afterRevision)
+            assertEquals(beforeRevision + 1, afterRevision)
 
             countObserver.cancelAndJoin()
             revisionObserver.join()
