@@ -5,7 +5,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import io.github.go0dboy.articlenavigator.collector.api.DiscoveryResult
 import io.github.go0dboy.articlenavigator.collector.api.FetchResult
 import io.github.go0dboy.articlenavigator.collector.api.SourceAdapter
-import io.github.go0dboy.articlenavigator.core.data.InboxRepository
+import io.github.go0dboy.articlenavigator.core.data.IngestionFinalizeOutcome
 import io.github.go0dboy.articlenavigator.core.model.ContentDisposition
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItem
 import io.github.go0dboy.articlenavigator.core.model.DiscoveredItemId
@@ -14,10 +14,12 @@ import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxOrigin
 import io.github.go0dboy.articlenavigator.core.model.PollPolicy
+import io.github.go0dboy.articlenavigator.core.model.RawContent
 import io.github.go0dboy.articlenavigator.core.model.Source
 import io.github.go0dboy.articlenavigator.core.model.SourceCursor
 import io.github.go0dboy.articlenavigator.core.model.SourceId
 import io.github.go0dboy.articlenavigator.core.model.SourceType
+import io.github.go0dboy.articlenavigator.pipeline.DefaultContentExtractor
 import io.github.go0dboy.articlenavigator.pipeline.InboxService
 import io.github.go0dboy.articlenavigator.pipeline.IngestionPipeline
 import io.github.go0dboy.articlenavigator.pipeline.SourceAdapterResolver
@@ -29,10 +31,15 @@ import java.time.ZoneOffset
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -47,6 +54,10 @@ class ReliabilityStage2RegressionTest {
     private val clock = Clock.fixed(now, ZoneOffset.UTC)
     private val sourceA = source("source-a", "Feed A")
     private val sourceB = source("source-b", "Feed B")
+    private val articleBody = "<html><body><article><p>Shared durable body</p></article></body></html>".toByteArray()
+    private val normalizedBody = DefaultContentExtractor()
+        .extract(articleBody, "text/html; charset=utf-8", "https://example.test/shared")
+        .normalizedText
 
     @Before
     fun setUp() {
@@ -55,7 +66,7 @@ class ReliabilityStage2RegressionTest {
             .build()
         sources = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
         ingestion = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
-        inbox = RoomInboxRepository(database.inboxDao())
+        inbox = RoomInboxRepository(database.inboxDao(), database.inboxLifecycleDao())
         knowledge = RoomKnowledgeRepository(database.documentDao())
     }
 
@@ -65,7 +76,7 @@ class ReliabilityStage2RegressionTest {
     }
 
     @Test
-    fun concurrentPipelinesMustNotFetchTheSameDiscoveryTwice() = runTest {
+    fun twoHandlersCannotFetchTheSameDiscovery() = runTest {
         sources.upsert(sourceA)
         val discovery = discovery("race-fetch", sourceA, "https://example.test/race")
         ingestion.upsertDiscovered(discovery)
@@ -76,7 +87,7 @@ class ReliabilityStage2RegressionTest {
         val slow = adapter { item ->
             fetches.incrementAndGet()
             firstStarted.complete(Unit)
-            releaseFirst.await()
+            withTimeout(TIMEOUT_MS) { releaseFirst.await() }
             success(item)
         }
         val fast = adapter { item ->
@@ -85,101 +96,226 @@ class ReliabilityStage2RegressionTest {
         }
 
         val firstRun = async { pipeline(slow).processReady(limit = 1) }
-        firstStarted.await()
-        pipeline(fast).processReady(limit = 1)
+        withTimeout(TIMEOUT_MS) { firstStarted.await() }
+        val secondReport = pipeline(fast).processReady(limit = 1)
         releaseFirst.complete(Unit)
-        firstRun.await()
+        withTimeout(TIMEOUT_MS) { firstRun.await() }
 
-        assertEquals("Only one processing owner may perform the article request", 1, fetches.get())
+        assertEquals(1, fetches.get())
+        assertEquals(0, secondReport.processed)
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.findDiscoveredById(discovery.id)?.status)
+        assertNull(database.articleProcessingDao().item(discovery.id.value)?.processingLeaseToken)
+        assertNull(ingestion.loadRawContent(discovery.id))
     }
 
     @Test
-    fun lateFailureMustNotOverwriteAlreadyProcessedDiscovery() = runTest {
+    fun expiredOwnerCannotPersistRawFailureSuccessOrReleaseReplacementLease() = runTest {
         sources.upsert(sourceA)
-        val discovery = discovery("late-failure", sourceA, "https://example.test/late")
+        val discovery = discovery("lease-replacement", sourceA, "https://example.test/lease")
         ingestion.upsertDiscovered(discovery)
 
-        assertEquals(true, ingestion.markProcessed(discovery.id, discovery.canonicalUrl))
-        assertEquals(
-            false,
+        val old = checkNotNull(
+            ingestion.tryClaimNext("old-owner", now, now.plusSeconds(1), isUnmeteredNetwork = true),
+        )
+        val replacementAt = now.plusSeconds(2)
+        val newer = checkNotNull(
+            ingestion.tryClaimNext("new-owner", replacementAt, replacementAt.plusSeconds(60), isUnmeteredNetwork = true),
+        )
+        val staleRaw = RawContent(
+            discoveredItemId = discovery.id,
+            contentType = "text/html",
+            payload = "stale".toByteArray(),
+            resolvedUrl = discovery.url,
+            fetchedAt = replacementAt,
+            httpStatus = 200,
+            expiresAt = replacementAt.plusSeconds(60),
+        )
+
+        assertFalse(ingestion.storeRawContent(old, staleRaw, replacementAt))
+        assertFalse(ingestion.markFetched(old, discovery.url, discovery.url, "stale-hash", replacementAt))
+        assertFalse(
             ingestion.markFailed(
-                id = discovery.id,
+                old,
                 processingAttempts = 1,
-                nextProcessingAt = now.plusSeconds(60),
-                lastProcessingError = "late stale failure",
+                nextProcessingAt = replacementAt.plusSeconds(30),
+                lastProcessingError = "late failure",
+                at = replacementAt,
             ),
         )
+        assertFalse(ingestion.markSkipped(old, discovery.url, "late skip", replacementAt))
+        ingestion.releaseProcessing(old)
+
+        assertEquals("new-owner", database.articleProcessingDao().item(discovery.id.value)?.processingLeaseToken)
+        assertNull(ingestion.loadRawContent(discovery.id))
+
+        val item = InboxItem(
+            id = InboxItemId("lease-inbox"),
+            canonicalUrl = discovery.url,
+            title = "Lease winner",
+            normalizedText = normalizedBody,
+            contentHash = sha256(normalizedBody),
+            createdAt = replacementAt,
+            updatedAt = replacementAt,
+        )
+        val origin = origin(item.id, discovery, sourceA, replacementAt)
+        assertEquals(
+            IngestionFinalizeOutcome.ADDED_TO_INBOX,
+            ingestion.finalizeSuccess(newer, item, origin, sha256(discovery.url), replacementAt.plusSeconds(1)),
+        )
+
         assertEquals(DiscoveryStatus.PROCESSED, ingestion.findDiscoveredById(discovery.id)?.status)
+        assertNull(database.articleProcessingDao().item(discovery.id.value)?.processingLeaseToken)
+        assertNotNull(inbox.findById(item.id))
     }
 
     @Test
-    fun saveMustIncludeOriginAttachedAfterServiceRead() = runTest {
-        val seeded = seedInbox()
-        val captured = CompletableDeferred<Unit>()
-        val resume = CompletableDeferred<Unit>()
-        val blocking = BlockingOriginsRepository(inbox, captured, resume)
-        val service = InboxService(blocking, clock)
+    fun saveCommittedBeforeLateOriginRoutesThatOriginIntoSavedDocument() = runTest {
+        val seeded = seedSharedInbox()
+        val discoveryB = discovery("origin-b", sourceB, seeded.item.canonicalUrl)
+        ingestion.upsertDiscovered(discoveryB)
+        val fetchStarted = CompletableDeferred<Unit>()
+        val allowFetch = CompletableDeferred<Unit>()
+        val processing = async {
+            pipeline(adapter { item ->
+                fetchStarted.complete(Unit)
+                withTimeout(TIMEOUT_MS) { allowFetch.await() }
+                success(item)
+            }).processReady(limit = 1)
+        }
+        withTimeout(TIMEOUT_MS) { fetchStarted.await() }
 
-        val save = async { service.save(seeded.item.id) }
-        captured.await()
-        inbox.attachOrigin(seeded.item.id, seeded.originB)
-        resume.complete(Unit)
-        val documentId = save.await()
+        val documentId = InboxService(inbox, clock).save(seeded.item.id)
+        allowFetch.complete(Unit)
+        withTimeout(TIMEOUT_MS) { processing.await() }
 
+        assertNull(inbox.findById(seeded.item.id))
         val provenances = knowledge.provenance(documentId)
-        assertEquals("Save must atomically consume every origin present at commit time", 2, provenances.size)
+        assertEquals(2, provenances.size)
         assertEquals(setOf(sourceA.id, sourceB.id), provenances.map { it.sourceId }.toSet())
-        assertEquals(null, inbox.findById(seeded.item.id))
+        assertEquals(ContentDisposition.SAVED, knowledge.findSeen(sha256(seeded.item.canonicalUrl), sourceA.id)?.disposition)
+        assertEquals(ContentDisposition.SAVED, knowledge.findSeen(sha256(seeded.item.canonicalUrl), sourceB.id)?.disposition)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.findDiscoveredById(discoveryB.id)?.status)
+        assertNull(ingestion.loadRawContent(discoveryB.id))
+        assertNull(database.articleProcessingDao().item(discoveryB.id.value)?.processingLeaseToken)
     }
 
     @Test
-    fun rejectMustFingerprintOriginAttachedAfterServiceRead() = runTest {
-        val seeded = seedInbox()
-        val captured = CompletableDeferred<Unit>()
-        val resume = CompletableDeferred<Unit>()
-        val blocking = BlockingOriginsRepository(inbox, captured, resume)
-        val service = InboxService(blocking, clock)
+    fun rejectCommittedWhileOldProcessingRunsCannotRecreateInbox() = runTest {
+        val seeded = seedSharedInbox()
+        val discoveryB = discovery("reject-origin-b", sourceB, seeded.item.canonicalUrl)
+        ingestion.upsertDiscovered(discoveryB)
+        val fetchStarted = CompletableDeferred<Unit>()
+        val allowFetch = CompletableDeferred<Unit>()
+        val processing = async {
+            pipeline(adapter { item ->
+                fetchStarted.complete(Unit)
+                withTimeout(TIMEOUT_MS) { allowFetch.await() }
+                success(item)
+            }).processReady(limit = 1)
+        }
+        withTimeout(TIMEOUT_MS) { fetchStarted.await() }
 
-        val reject = async { service.reject(seeded.item.id) }
-        captured.await()
-        inbox.attachOrigin(seeded.item.id, seeded.originB)
-        resume.complete(Unit)
-        reject.await()
+        assertTrue(InboxService(inbox, clock).reject(seeded.item.id))
+        allowFetch.complete(Unit)
+        val report = withTimeout(TIMEOUT_MS) { processing.await() }
 
-        val fingerprint = knowledge.findSeen(sha256(seeded.item.canonicalUrl), sourceB.id)
-        assertNotNull("Reject must not lose a concurrently attached origin", fingerprint)
-        assertEquals(ContentDisposition.REJECTED, fingerprint?.disposition)
-        assertEquals(null, inbox.findById(seeded.item.id))
+        assertEquals(1, report.alreadyKnown)
+        assertNull(inbox.findById(seeded.item.id))
+        assertEquals(ContentDisposition.REJECTED, knowledge.findSeen(sha256(seeded.item.canonicalUrl), sourceA.id)?.disposition)
+        assertEquals(ContentDisposition.REJECTED, knowledge.findSeen(sha256(seeded.item.canonicalUrl), sourceB.id)?.disposition)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.findDiscoveredById(discoveryB.id)?.status)
+        assertNull(ingestion.loadRawContent(discoveryB.id))
+        assertNull(database.articleProcessingDao().item(discoveryB.id.value)?.processingLeaseToken)
     }
 
-    private suspend fun seedInbox(): SeededInbox {
+    @Test
+    fun saveAndRejectRaceHasExactlyOneCommittedWinnerAndRepeatSaveFails() = runTest {
+        val seeded = seedSharedInbox()
+        val service = InboxService(inbox, clock)
+        val start = CompletableDeferred<Unit>()
+
+        val save = async {
+            withTimeout(TIMEOUT_MS) { start.await() }
+            try {
+                SaveResult(service.save(seeded.item.id), null)
+            } catch (error: NoSuchElementException) {
+                SaveResult(null, error)
+            }
+        }
+        val reject = async {
+            withTimeout(TIMEOUT_MS) { start.await() }
+            service.reject(seeded.item.id)
+        }
+        start.complete(Unit)
+        val saveResult = withTimeout(TIMEOUT_MS) { save.await() }
+        val rejectResult = withTimeout(TIMEOUT_MS) { reject.await() }
+
+        assertTrue((saveResult.documentId != null) xor rejectResult)
+        assertNull(inbox.findById(seeded.item.id))
+        if (saveResult.documentId != null) {
+            assertNotNull(knowledge.findById(saveResult.documentId))
+            assertEquals(ContentDisposition.SAVED, knowledge.findSeen(sha256(seeded.item.canonicalUrl), sourceA.id)?.disposition)
+            try {
+                service.save(seeded.item.id)
+                throw AssertionError("Repeat Save must not succeed")
+            } catch (_: NoSuchElementException) {
+                // expected
+            }
+        } else {
+            assertNotNull(saveResult.error)
+            assertNull(knowledge.findByCanonicalUrl(seeded.item.canonicalUrl))
+            assertEquals(ContentDisposition.REJECTED, knowledge.findSeen(sha256(seeded.item.canonicalUrl), sourceA.id)?.disposition)
+        }
+    }
+
+    @Test
+    fun sameMaterialFromTwoSourcesProducesOneInboxWithBothOrigins() = runTest {
+        sources.upsert(sourceA)
+        sources.upsert(sourceB)
+        val a = discovery("same-a", sourceA, "https://example.test/a-copy")
+        val b = discovery("same-b", sourceB, "https://example.test/b-copy")
+        ingestion.upsertDiscovered(a)
+        ingestion.upsertDiscovered(b)
+
+        val reports = listOf(
+            async { pipeline(adapter(::success)).processReady(limit = 1) },
+            async { pipeline(adapter(::success)).processReady(limit = 1) },
+        ).awaitAll()
+
+        assertEquals(2, reports.sumOf { it.processed })
+        val pending = inbox.listPending()
+        assertEquals(1, pending.size)
+        val origins = inbox.origins(pending.single().id)
+        assertEquals(2, origins.size)
+        assertEquals(setOf(sourceA.id, sourceB.id), origins.map { it.sourceId }.toSet())
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.findDiscoveredById(a.id)?.status)
+        assertEquals(DiscoveryStatus.PROCESSED, ingestion.findDiscoveredById(b.id)?.status)
+        assertNull(ingestion.loadRawContent(a.id))
+        assertNull(ingestion.loadRawContent(b.id))
+    }
+
+    private suspend fun seedSharedInbox(): SeededInbox {
         sources.upsert(sourceA)
         sources.upsert(sourceB)
         val item = InboxItem(
             id = InboxItemId("shared-inbox"),
             canonicalUrl = "https://example.test/shared",
             title = "Shared",
-            normalizedText = "Shared durable body",
-            contentHash = sha256("Shared durable body"),
+            normalizedText = normalizedBody,
+            contentHash = sha256(normalizedBody),
             createdAt = now.minusSeconds(30),
             updatedAt = now.minusSeconds(30),
         )
         val discoveredA = discovery("origin-a", sourceA, item.canonicalUrl)
-        val discoveredB = discovery("origin-b", sourceB, item.canonicalUrl)
         ingestion.upsertDiscovered(discoveredA)
-        ingestion.upsertDiscovered(discoveredB)
-        val originA = origin(item.id, discoveredA, sourceA)
-        val originB = origin(item.id, discoveredB, sourceB)
+        val originA = origin(item.id, discoveredA, sourceA, now.minusSeconds(10))
         inbox.put(item, originA)
-        return SeededInbox(item, originA, originB)
+        return SeededInbox(item, originA)
     }
 
     private fun pipeline(adapter: SourceAdapter) = IngestionPipeline(
         sourceRepository = sources,
         ingestionRepository = ingestion,
-        inboxRepository = inbox,
-        knowledgeRepository = knowledge,
         adapterResolver = SourceAdapterResolver { adapter },
         clock = clock,
     )
@@ -195,7 +331,7 @@ class ReliabilityStage2RegressionTest {
         item = item,
         statusCode = 200,
         contentType = "text/html; charset=utf-8",
-        body = "<html><body><article><p>Shared durable body</p></article></body></html>".toByteArray(),
+        body = articleBody,
         resolvedUrl = item.url,
     )
 
@@ -219,7 +355,12 @@ class ReliabilityStage2RegressionTest {
         discoveredAt = now.minusSeconds(60),
     )
 
-    private fun origin(inboxId: InboxItemId, item: DiscoveredItem, source: Source) = InboxOrigin(
+    private fun origin(
+        inboxId: InboxItemId,
+        item: DiscoveredItem,
+        source: Source,
+        fetchedAt: Instant,
+    ) = InboxOrigin(
         inboxItemId = inboxId,
         discoveredItemId = item.id,
         sourceId = source.id,
@@ -227,7 +368,7 @@ class ReliabilityStage2RegressionTest {
         resolvedUrl = item.url,
         canonicalUrl = item.canonicalUrl ?: item.url,
         discoveredAt = item.discoveredAt,
-        fetchedAt = now.minusSeconds(10),
+        fetchedAt = fetchedAt,
         sourceNameSnapshot = source.name,
         sourceUrlSnapshot = source.url,
         sourceTypeSnapshot = source.type.name,
@@ -240,19 +381,14 @@ class ReliabilityStage2RegressionTest {
     private data class SeededInbox(
         val item: InboxItem,
         val originA: InboxOrigin,
-        val originB: InboxOrigin,
     )
-}
 
-private class BlockingOriginsRepository(
-    private val delegate: InboxRepository,
-    private val captured: CompletableDeferred<Unit>,
-    private val resume: CompletableDeferred<Unit>,
-) : InboxRepository by delegate {
-    override suspend fun origins(id: InboxItemId): List<InboxOrigin> {
-        val snapshot = delegate.origins(id)
-        captured.complete(Unit)
-        resume.await()
-        return snapshot
+    private data class SaveResult(
+        val documentId: io.github.go0dboy.articlenavigator.core.model.DocumentId?,
+        val error: Throwable?,
+    )
+
+    companion object {
+        private const val TIMEOUT_MS = 5_000L
     }
 }
