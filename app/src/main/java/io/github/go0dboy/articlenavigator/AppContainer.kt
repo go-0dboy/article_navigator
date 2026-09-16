@@ -52,7 +52,7 @@ class AppContainer(
     private val collectionRepository = RoomCollectionRepository(database.collectionDao())
     private val ingestionRepository = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
     private val stateRepository = RoomCollectionStateRepository(database.collectionStateDao())
-    private val inboxRepository = RoomInboxRepository(database.inboxDao())
+    private val inboxRepository = RoomInboxRepository(database.inboxDao(), database.inboxLifecycleDao())
     private val knowledgeRepository = RoomKnowledgeRepository(database.documentDao())
 
     private val adapterRegistry = SourceAdapterRegistry(
