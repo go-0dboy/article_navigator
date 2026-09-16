@@ -284,7 +284,14 @@ class RoomIngestionRepository(
     override suspend fun deleteRawContent(id: DiscoveredItemId) = dao.deleteRawContent(id.value)
 }
 
-class RoomInboxRepository(private val dao: InboxDao) : InboxRepository {
+class RoomInboxRepository(
+    private val dao: InboxDao,
+    private val lifecycleDao: InboxLifecycleDao? = null,
+) : InboxRepository {
+    private fun lifecycle(): InboxLifecycleDao = checkNotNull(lifecycleDao) {
+        "InboxLifecycleDao is required for runtime Inbox user actions"
+    }
+
     override suspend fun put(item: InboxItem, origin: InboxOrigin) = dao.put(item.toEntity(), origin.toEntity())
     override suspend fun attachOrigin(itemId: InboxItemId, origin: InboxOrigin) = dao.attachOrigin(itemId.value, origin.toEntity())
     override suspend fun listPending(limit: Int): List<InboxItem> = dao.listPending(limit).map { it.toDomain() }
@@ -292,6 +299,19 @@ class RoomInboxRepository(private val dao: InboxDao) : InboxRepository {
     override suspend fun findByCanonicalUrl(canonicalUrl: String): InboxItem? = dao.findByCanonicalUrl(canonicalUrl)?.toDomain()
     override suspend fun findByContentHash(contentHash: String): InboxItem? = dao.findByContentHash(contentHash)?.toDomain()
     override suspend fun origins(id: InboxItemId): List<InboxOrigin> = dao.origins(id.value).map { it.toDomain() }
+
+    override suspend fun saveCurrent(id: InboxItemId, at: Instant, parserVersion: String): DocumentId? =
+        lifecycle().saveCurrent(id.value, at.toEpochMilli(), parserVersion)?.let(::DocumentId)
+
+    override suspend fun discardCurrent(
+        id: InboxItemId,
+        disposition: ContentDisposition,
+        at: Instant,
+    ): Boolean {
+        require(disposition == ContentDisposition.REJECTED || disposition == ContentDisposition.READ_AND_DISCARDED)
+        return lifecycle().discardCurrent(id.value, disposition.name, at.toEpochMilli())
+    }
+
     override suspend fun discard(
         id: InboxItemId,
         disposition: ContentDisposition,
@@ -300,6 +320,7 @@ class RoomInboxRepository(private val dao: InboxDao) : InboxRepository {
         require(disposition == ContentDisposition.REJECTED || disposition == ContentDisposition.READ_AND_DISCARDED)
         dao.discard(id.value, fingerprints.map { it.toEntity() })
     }
+
     override suspend fun save(
         id: InboxItemId,
         document: Document,
