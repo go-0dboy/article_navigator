@@ -207,6 +207,53 @@ class InboxViewModelTest {
     }
 
     @Test
+    fun saveAfterMultiplePagesBackfillsLoadedWindowAndKeepsNextCursor() = runTest {
+        val main = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(main)
+        try {
+            val repository = FakeInboxRepository()
+            repository.replace((0 until 60).map(::item), emitRevision = false)
+            val savedId = DocumentId("saved-from-page-two")
+            val actions = object : InboxActions {
+                override suspend fun save(id: InboxItemId): DocumentId {
+                    repository.replace(repository.rows.filterNot { it.id == id })
+                    return savedId
+                }
+
+                override suspend fun reject(id: InboxItemId): Boolean = true
+                override suspend fun readAndDiscard(id: InboxItemId): Boolean = true
+            }
+            val viewModel = InboxViewModel(repository, actions)
+            advanceUntilIdle()
+
+            viewModel.loadMore()
+            advanceUntilIdle()
+            assertEquals(40, viewModel.state.value.items.size)
+            val toSave = viewModel.state.value.items[25]
+
+            viewModel.save(toSave.id)
+            advanceUntilIdle()
+
+            assertEquals(59, viewModel.state.value.totalCount)
+            assertEquals(40, viewModel.state.value.items.size)
+            assertFalse(viewModel.state.value.items.any { it.id == toSave.id })
+            assertEquals(40, viewModel.state.value.items.map { it.id }.distinct().size)
+            assertTrue(viewModel.state.value.hasMore)
+            assertEquals(savedId, viewModel.state.value.savedDocumentToOpen)
+
+            viewModel.loadMore()
+            advanceUntilIdle()
+
+            assertEquals(59, viewModel.state.value.items.size)
+            assertEquals(59, viewModel.state.value.items.map { it.id }.distinct().size)
+            assertFalse(viewModel.state.value.hasMore)
+            assertFalse(viewModel.state.value.items.any { it.id == toSave.id })
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
     fun cancelledInboxActionIsNotConvertedIntoUiFailure() = runTest {
         val main = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(main)
