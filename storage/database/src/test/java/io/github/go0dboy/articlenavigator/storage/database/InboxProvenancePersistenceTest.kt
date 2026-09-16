@@ -25,8 +25,8 @@ class InboxProvenancePersistenceTest {
             .build()
         try {
             val sources = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
-            val ingestion = RoomIngestionRepository(database.ingestionDao())
-            val inbox = RoomInboxRepository(database.inboxDao())
+            val ingestion = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
+            val inbox = RoomInboxRepository(database.inboxDao(), database.inboxLifecycleDao())
             val now = Instant.parse("2026-09-15T18:00:00Z")
             val source = Source(
                 id = SourceId("source"),
