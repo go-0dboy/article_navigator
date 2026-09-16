@@ -90,6 +90,14 @@ class IngestionPipeline(
             } catch (error: CancellationException) {
                 releaseBestEffort(lease)
                 throw error
+            } catch (error: Exception) {
+                // Source/article-local failures are converted to durable FAILED/SKIPPED outcomes
+                // inside processOne(). Anything escaping here is shared infrastructure failure.
+                // Release our still-owned lease so WorkManager's immediate retry is not blocked by
+                // this run's processing TTL. If storage is unavailable, releaseBestEffort falls
+                // back to the persisted lease expiry without hiding the original failure.
+                releaseBestEffort(lease)
+                throw error
             }
             when (outcome) {
                 Outcome.ADDED -> added++
