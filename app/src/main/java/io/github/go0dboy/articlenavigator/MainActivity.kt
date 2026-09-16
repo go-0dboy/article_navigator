@@ -1,6 +1,9 @@
 package io.github.go0dboy.articlenavigator
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -23,15 +26,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import io.github.go0dboy.articlenavigator.core.model.InboxItem
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.Source
-import io.github.go0dboy.articlenavigator.feature.inbox.InboxScreen
+import io.github.go0dboy.articlenavigator.feature.inbox.InboxActions
+import io.github.go0dboy.articlenavigator.feature.inbox.InboxRoute
+import io.github.go0dboy.articlenavigator.feature.library.LibraryRoute
 import io.github.go0dboy.articlenavigator.feature.sources.SourcesScreen
 import java.time.Instant
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -49,26 +56,44 @@ class MainActivity : ComponentActivity() {
 private enum class AppSection {
     SOURCES,
     INBOX,
+    LIBRARY,
     DIAGNOSTICS,
 }
 
 @Composable
 private fun ArticleNavigatorApp(container: AppContainer) {
-    var section by remember { mutableStateOf(AppSection.INBOX) }
+    var sectionName by rememberSaveable { mutableStateOf(AppSection.INBOX.name) }
+    val section = AppSection.valueOf(sectionName)
+    var selectedLibraryDocumentId by rememberSaveable { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<DeviceStatus?>(null) }
     var sources by remember { mutableStateOf<List<Source>>(emptyList()) }
-    var inbox by remember { mutableStateOf<List<InboxItem>>(emptyList()) }
     var actionMessage by remember { mutableStateOf("Готов к работе") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
-    suspend fun refreshData(reportErrors: Boolean = false) {
+    val inboxCountFlow = remember(container) { container.inboxPagingRepository.observePendingCount() }
+    val libraryCountFlow = remember(container) { container.libraryRepository.observeSavedCount() }
+    val inboxCount by inboxCountFlow.collectAsStateWithLifecycle(initialValue = 0)
+    val libraryCount by libraryCountFlow.collectAsStateWithLifecycle(initialValue = 0)
+
+    val inboxActions = remember(container) {
+        object : InboxActions {
+            override suspend fun save(id: io.github.go0dboy.articlenavigator.core.model.InboxItemId): DocumentId =
+                container.saveInbox(id)
+
+            override suspend fun reject(id: io.github.go0dboy.articlenavigator.core.model.InboxItemId): Boolean =
+                container.rejectInbox(id)
+
+            override suspend fun readAndDiscard(id: io.github.go0dboy.articlenavigator.core.model.InboxItemId): Boolean =
+                container.readAndDiscardInbox(id)
+        }
+    }
+
+    suspend fun refreshOperationalData(reportErrors: Boolean = false) {
         runCatching { container.listSources() }
             .onSuccess { sources = it }
             .onFailure { if (reportErrors) actionMessage = "Ошибка чтения источников: ${it.message}" }
-        runCatching { container.loadInbox() }
-            .onSuccess { inbox = it }
-            .onFailure { if (reportErrors) actionMessage = "Ошибка чтения Inbox: ${it.message}" }
         runCatching { container.loadDeviceStatus() }
             .onSuccess { status = it }
             .onFailure { if (reportErrors) actionMessage = "Ошибка чтения статуса: ${it.message}" }
@@ -81,16 +106,16 @@ private fun ArticleNavigatorApp(container: AppContainer) {
             runCatching { action() }
                 .onSuccess { actionMessage = it }
                 .onFailure { actionMessage = "Ошибка: ${it.message ?: it::class.java.simpleName}" }
-            refreshData()
+            refreshOperationalData()
             busy = false
         }
     }
 
-    LaunchedEffect(container) {
-        refreshData(reportErrors = true)
-        while (true) {
-            delay(2_000)
-            refreshData()
+    // Sources/diagnostics are refreshed when entered. Inbox/library are reactive Room flows and do
+    // not use periodic polling; their ViewModels receive database invalidations automatically.
+    LaunchedEffect(section) {
+        if (section == AppSection.SOURCES || section == AppSection.DIAGNOSTICS) {
+            refreshOperationalData(reportErrors = true)
         }
     }
 
@@ -103,13 +128,14 @@ private fun ArticleNavigatorApp(container: AppContainer) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "Article Navigator · Phase 4",
+                text = "Article Navigator",
                 style = MaterialTheme.typography.headlineSmall,
             )
             SectionSelector(
                 selected = section,
-                inboxCount = inbox.size,
-                onSelected = { section = it },
+                inboxCount = inboxCount,
+                libraryCount = libraryCount,
+                onSelected = { sectionName = it.name },
             )
 
             when (section) {
@@ -130,37 +156,29 @@ private fun ArticleNavigatorApp(container: AppContainer) {
                             "Сбор запущен: $id"
                         }
                     },
-                    onRefresh = { scope.launch { refreshData(reportErrors = true) } },
+                    onRefresh = { scope.launch { refreshOperationalData(reportErrors = true) } },
                 )
 
-                AppSection.INBOX -> InboxScreen(
+                AppSection.INBOX -> InboxRoute(
                     modifier = Modifier.weight(1f),
-                    items = inbox,
-                    busy = busy,
-                    message = actionMessage,
-                    onRefresh = { scope.launch { refreshData(reportErrors = true) } },
-                    onReject = { id ->
-                        runAction("Помечаю материал как неинтересный…") {
-                            if (container.rejectInbox(id)) {
-                                "Материал исключён из будущих повторов"
-                            } else {
-                                "Материал уже обработан другим действием"
-                            }
-                        }
+                    repository = container.inboxPagingRepository,
+                    actions = inboxActions,
+                    onOpenSavedDocument = { documentId ->
+                        selectedLibraryDocumentId = documentId.value
+                        sectionName = AppSection.LIBRARY.name
                     },
-                    onReadAndDiscard = { id ->
-                        runAction("Закрываю материал без сохранения…") {
-                            if (container.readAndDiscardInbox(id)) {
-                                "Материал отмечен прочитанным без сохранения"
-                            } else {
-                                "Материал уже обработан другим действием"
-                            }
+                )
+
+                AppSection.LIBRARY -> LibraryRoute(
+                    modifier = Modifier.weight(1f),
+                    repository = container.libraryRepository,
+                    initialDocumentId = selectedLibraryDocumentId?.let(::DocumentId),
+                    onOpenExternal = { url ->
+                        val result = runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                         }
-                    },
-                    onSave = { id ->
-                        runAction("Сохраняю материал…") {
-                            val documentId = container.saveInbox(id)
-                            "Сохранено в базу знаний: ${documentId.value}"
+                        if (result.isFailure) {
+                            Toast.makeText(context, "Не удалось открыть внешнюю ссылку", Toast.LENGTH_SHORT).show()
                         }
                     },
                 )
@@ -192,11 +210,12 @@ private fun ArticleNavigatorApp(container: AppContainer) {
 private fun SectionSelector(
     selected: AppSection,
     inboxCount: Int,
+    libraryCount: Int,
     onSelected: (AppSection) -> Unit,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         SectionButton(
             modifier = Modifier.weight(1f),
@@ -209,6 +228,12 @@ private fun SectionSelector(
             selected = selected == AppSection.INBOX,
             text = "Inbox ($inboxCount)",
             onClick = { onSelected(AppSection.INBOX) },
+        )
+        SectionButton(
+            modifier = Modifier.weight(1f),
+            selected = selected == AppSection.LIBRARY,
+            text = "Библиотека ($libraryCount)",
+            onClick = { onSelected(AppSection.LIBRARY) },
         )
         SectionButton(
             modifier = Modifier.weight(1f),

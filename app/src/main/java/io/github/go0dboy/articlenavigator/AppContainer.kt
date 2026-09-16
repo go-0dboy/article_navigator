@@ -5,6 +5,8 @@ import androidx.room3.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import io.github.go0dboy.articlenavigator.collector.api.UrlCanonicalizer
 import io.github.go0dboy.articlenavigator.collector.rss.RssAtomSourceAdapter
+import io.github.go0dboy.articlenavigator.core.data.InboxPagingRepository
+import io.github.go0dboy.articlenavigator.core.data.LibraryRepository
 import io.github.go0dboy.articlenavigator.core.model.DocumentId
 import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
@@ -30,12 +32,15 @@ import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_3_4
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_4_5
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionStateRepository
+import io.github.go0dboy.articlenavigator.storage.database.RoomInboxPagingRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomInboxRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomIngestionRepository
+import io.github.go0dboy.articlenavigator.storage.database.RoomLibraryRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomSourceRepository
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.flow.first
 
 class AppContainer(
     private val context: Context,
@@ -53,6 +58,10 @@ class AppContainer(
     private val ingestionRepository = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
     private val stateRepository = RoomCollectionStateRepository(database.collectionStateDao())
     private val inboxRepository = RoomInboxRepository(database.inboxDao(), database.inboxLifecycleDao())
+
+    /** Read-only observable projections used by UI. All mutations remain on InboxService/pipeline. */
+    val inboxPagingRepository: InboxPagingRepository = RoomInboxPagingRepository(database.inboxPagingDao())
+    val libraryRepository: LibraryRepository = RoomLibraryRepository(database.libraryReadDao())
 
     private val adapterRegistry = SourceAdapterRegistry(
         listOf(RssAtomSourceAdapter(OkHttpTransport())),
@@ -183,6 +192,7 @@ class AppContainer(
         return CollectionWorkScheduler.runNow(context)
     }
 
+    /** Retained for diagnostics/compatibility; screen paging uses inboxPagingRepository. */
     suspend fun loadInbox(): List<InboxItem> = inboxService.list()
 
     suspend fun rejectInbox(id: InboxItemId): Boolean = inboxService.reject(id)
@@ -207,7 +217,7 @@ class AppContainer(
                 .ifBlank { null },
             lastDiscoveredCount = state?.lastDiscoveredCount ?: 0,
             totalDiscoveredCount = database.ingestionDao().countDiscovered(),
-            pendingInboxCount = inboxService.list().size,
+            pendingInboxCount = inboxPagingRepository.observePendingCount().first(),
             latestTitles = latest.map { it.title ?: it.url },
         )
     }
