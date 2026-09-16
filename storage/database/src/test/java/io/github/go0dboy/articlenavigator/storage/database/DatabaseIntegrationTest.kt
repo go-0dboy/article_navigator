@@ -19,7 +19,9 @@ import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.test.runTest
 import org.junit.After
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -36,7 +38,7 @@ class DatabaseIntegrationTest {
             .setDriver(BundledSQLiteDriver())
             .build()
         sourceRepository = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
-        ingestionRepository = RoomIngestionRepository(database.ingestionDao())
+        ingestionRepository = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
         knowledgeRepository = RoomKnowledgeRepository(database.documentDao())
     }
 
@@ -68,13 +70,30 @@ class DatabaseIntegrationTest {
             url = "https://example.test/a",
             discoveredAt = now,
         )
-        val raw = RawContent(item.id, "text/html", "<article>body</article>", now, 200, now.plusSeconds(3600))
+        val bytes = byteArrayOf(0, 1, 2, 0x7f, 0x80.toByte(), 0xff.toByte())
+        val raw = RawContent(
+            discoveredItemId = item.id,
+            contentType = "application/octet-stream; x-test=1",
+            payload = bytes,
+            resolvedUrl = "https://cdn.example.test/final-a",
+            fetchedAt = now,
+            httpStatus = 200,
+            expiresAt = now.plusSeconds(3600),
+        )
 
         ingestionRepository.upsertDiscovered(item)
         ingestionRepository.storeRawContent(raw)
 
         assertEquals(item, ingestionRepository.findDiscovered(source.id, item.url))
-        assertEquals(raw, ingestionRepository.loadRawContent(item.id))
+        val loaded = ingestionRepository.loadRawContent(item.id)
+        assertNotNull(loaded)
+        assertEquals(raw.discoveredItemId, loaded?.discoveredItemId)
+        assertEquals(raw.contentType, loaded?.contentType)
+        assertArrayEquals(bytes, loaded?.payload)
+        assertEquals(raw.resolvedUrl, loaded?.resolvedUrl)
+        assertEquals(raw.fetchedAt, loaded?.fetchedAt)
+        assertEquals(raw.httpStatus, loaded?.httpStatus)
+        assertEquals(raw.expiresAt, loaded?.expiresAt)
     }
 
     @Test
