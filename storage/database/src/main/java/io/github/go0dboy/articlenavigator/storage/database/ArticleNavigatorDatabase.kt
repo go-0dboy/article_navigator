@@ -18,7 +18,7 @@ import androidx.room3.RoomDatabase
         SeenFingerprintEntity::class,
         InterestEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class ArticleNavigatorDatabase : RoomDatabase() {

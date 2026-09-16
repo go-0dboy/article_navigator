@@ -148,6 +148,7 @@ internal fun InboxItem.toEntity() = InboxItemEntity(
     contentHash,
     createdAt.toEpochMilli(),
     updatedAt.toEpochMilli(),
+    parserVersion,
 )
 
 internal fun InboxItemEntity.toDomain() = InboxItem(
@@ -159,6 +160,7 @@ internal fun InboxItemEntity.toDomain() = InboxItem(
     contentHash,
     Instant.ofEpochMilli(createdAtEpochMillis),
     Instant.ofEpochMilli(updatedAtEpochMillis),
+    parserVersion,
 )
 
 internal fun InboxOrigin.toEntity() = InboxOriginEntity(

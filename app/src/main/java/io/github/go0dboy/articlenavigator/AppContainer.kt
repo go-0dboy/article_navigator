@@ -30,6 +30,7 @@ import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_1_2
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_2_3
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_3_4
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_4_5
+import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_5_6
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionStateRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomInboxPagingRepository
@@ -50,7 +51,7 @@ class AppContainer(
         name = "article-navigator.db",
     )
         .setDriver(BundledSQLiteDriver())
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
         .build()
 
     private val sourceRepository = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
