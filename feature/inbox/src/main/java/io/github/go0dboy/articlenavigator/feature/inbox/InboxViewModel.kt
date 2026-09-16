@@ -8,11 +8,13 @@ import io.github.go0dboy.articlenavigator.core.model.InboxItem
 import io.github.go0dboy.articlenavigator.core.model.InboxItemId
 import io.github.go0dboy.articlenavigator.core.model.InboxPageKey
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -30,6 +32,7 @@ data class InboxScreenState(
     val hasMore: Boolean = false,
     val busyIds: Set<InboxItemId> = emptySet(),
     val error: String? = null,
+    val subscriptionError: String? = null,
     val message: String? = null,
     val savedDocumentToOpen: DocumentId? = null,
 )
@@ -43,39 +46,41 @@ class InboxViewModel(
 
     private val pagingMutex = Mutex()
     private var nextKey: InboxPageKey? = null
+    private var observationJob: Job? = null
 
     init {
-        viewModelScope.launch {
-            repository.observePendingCount().collect { count ->
-                _state.update { it.copy(totalCount = count) }
-            }
-        }
-        viewModelScope.launch {
-            repository.observeRevision().collect { refresh() }
-        }
+        reconnectObservations()
     }
 
-    fun retry() = viewModelScope.launch { refresh() }
+    fun retry() = reconnectObservations()
 
     fun loadMore() = viewModelScope.launch {
         pagingMutex.withLock {
             if (_state.value.loading || _state.value.loadingMore || !_state.value.hasMore) return@withLock
+            val key = nextKey ?: return@withLock
             _state.update { it.copy(loadingMore = true, error = null) }
             try {
-                val raw = repository.loadPage(nextKey, PAGE_SIZE + 1)
+                val raw = repository.loadPage(key, PAGE_SIZE + 1)
                 val page = raw.take(PAGE_SIZE)
-                nextKey = page.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
+                val newItems = (_state.value.items + page).distinctBy { it.id }
+                nextKey = newItems.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
                 _state.update { current ->
                     current.copy(
-                        items = (current.items + page).distinctBy { it.id },
+                        items = newItems,
                         loadingMore = false,
                         hasMore = raw.size > PAGE_SIZE,
+                        error = null,
                     )
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                _state.update { it.copy(loadingMore = false, error = error.message ?: "Не удалось загрузить Inbox") }
+                _state.update {
+                    it.copy(
+                        loadingMore = false,
+                        error = error.message ?: "Не удалось загрузить следующую страницу Inbox",
+                    )
+                }
             }
         }
     }
@@ -112,6 +117,44 @@ class InboxViewModel(
         _state.update { it.copy(message = null, error = null) }
     }
 
+    private fun reconnectObservations() {
+        observationJob?.cancel()
+        _state.update { it.copy(subscriptionError = null) }
+        observationJob = viewModelScope.launch {
+            supervisorScope {
+                launch {
+                    try {
+                        repository.observePendingCount().collect { count ->
+                            _state.update { it.copy(totalCount = count) }
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        reportSubscriptionError(error, "Не удалось наблюдать количество материалов Inbox")
+                    }
+                }
+                launch {
+                    try {
+                        repository.observeRevision().collect {
+                            refreshLoadedRange()
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        _state.update { it.copy(loading = false, loadingMore = false) }
+                        reportSubscriptionError(error, "Автоматическое обновление Inbox остановлено")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun reportSubscriptionError(error: Exception, fallback: String) {
+        _state.update {
+            it.copy(subscriptionError = error.message?.takeIf(String::isNotBlank) ?: fallback)
+        }
+    }
+
     private fun runAction(id: InboxItemId, action: suspend () -> Unit) {
         if (id in _state.value.busyIds) return
         viewModelScope.launch {
@@ -128,31 +171,35 @@ class InboxViewModel(
         }
     }
 
-    private suspend fun refresh() {
+    private suspend fun refreshLoadedRange() {
         pagingMutex.withLock {
-            val showSpinner = _state.value.items.isEmpty()
+            val snapshot = _state.value
+            val requestedSize = maxOf(PAGE_SIZE, snapshot.items.size)
+            val showSpinner = snapshot.items.isEmpty()
             _state.update { it.copy(loading = showSpinner, error = null) }
             try {
-                val raw = repository.loadPage(null, PAGE_SIZE + 1)
-                val page = raw.take(PAGE_SIZE)
-                nextKey = page.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
+                val raw = repository.loadPage(null, requestedSize + 1)
+                val refreshed = raw.take(requestedSize)
+                nextKey = refreshed.lastOrNull()?.let { InboxPageKey(it.createdAt, it.id) }
                 _state.update {
                     it.copy(
-                        items = page,
+                        items = refreshed,
                         loading = false,
                         loadingMore = false,
-                        hasMore = raw.size > PAGE_SIZE,
+                        hasMore = raw.size > requestedSize,
+                        error = null,
                     )
                 }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                nextKey = null
+                // Preserve the previously coherent window and cursor. A failed background refresh
+                // must not cause the next page request to restart from the beginning.
                 _state.update {
                     it.copy(
                         loading = false,
                         loadingMore = false,
-                        error = error.message ?: "Не удалось загрузить Inbox",
+                        error = error.message ?: "Не удалось обновить Inbox",
                     )
                 }
             }
