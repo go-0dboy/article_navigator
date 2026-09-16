@@ -26,6 +26,7 @@ import io.github.go0dboy.articlenavigator.storage.database.ArticleNavigatorDatab
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_1_2
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_2_3
 import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_3_4
+import io.github.go0dboy.articlenavigator.storage.database.MIGRATION_4_5
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomCollectionStateRepository
 import io.github.go0dboy.articlenavigator.storage.database.RoomInboxRepository
@@ -44,12 +45,12 @@ class AppContainer(
         name = "article-navigator.db",
     )
         .setDriver(BundledSQLiteDriver())
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
         .build()
 
     private val sourceRepository = RoomSourceRepository(database.sourceDao(), database.sourceScheduleDao())
     private val collectionRepository = RoomCollectionRepository(database.collectionDao())
-    private val ingestionRepository = RoomIngestionRepository(database.ingestionDao())
+    private val ingestionRepository = RoomIngestionRepository(database.ingestionDao(), database.articleProcessingDao())
     private val stateRepository = RoomCollectionStateRepository(database.collectionStateDao())
     private val inboxRepository = RoomInboxRepository(database.inboxDao())
     private val knowledgeRepository = RoomKnowledgeRepository(database.documentDao())
@@ -79,7 +80,7 @@ class AppContainer(
         val diagnosticWasEnabled = sourceRepository.findById(SAMPLE_SOURCE_ID)?.enabled == true
         return try {
             val report = orchestrator.run(CollectionRunContext(isUnmeteredNetwork))
-            ingestionPipeline.processReady(limit = 20)
+            ingestionPipeline.processReady(limit = 20, isUnmeteredNetwork = isUnmeteredNetwork)
             report
         } finally {
             if (diagnosticWasEnabled) {
