@@ -33,8 +33,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
 class LibraryAndroidBuilderIntegrationTest {
     private val now = Instant.parse("2026-09-16T11:00:00Z")
 
