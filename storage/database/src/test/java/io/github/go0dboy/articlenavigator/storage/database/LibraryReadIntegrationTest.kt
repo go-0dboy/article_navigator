@@ -22,12 +22,11 @@ import io.github.go0dboy.articlenavigator.core.model.SourceType
 import java.time.Duration
 import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -163,7 +162,7 @@ class LibraryReadIntegrationTest {
     }
 
     @Test
-    fun revisionInvalidatesWhenExistingDocumentChangesWithoutCountChange() = runTest {
+    fun revisionInvalidatesWhenExistingDocumentChangesWithoutCountChange() = runBlocking {
         val source = source("source-a", "Source")
         sources.upsert(source)
         val document = savedDocument("doc-update", now, "Original body")
@@ -172,7 +171,7 @@ class LibraryReadIntegrationTest {
 
         val firstEmission = CompletableDeferred<Long>()
         val secondEmission = CompletableDeferred<Long>()
-        val collector = launch(Dispatchers.Default) {
+        val collector = launch {
             var emissionIndex = 0
             library.observeRevision().take(2).collect { revision ->
                 if (emissionIndex++ == 0) {
@@ -183,9 +182,7 @@ class LibraryReadIntegrationTest {
             }
         }
 
-        val firstRevision = withContext(Dispatchers.Default) {
-            withTimeout(5_000) { firstEmission.await() }
-        }
+        val firstRevision = withTimeout(5_000) { firstEmission.await() }
 
         database.documentDao().upsert(
             document.copy(
@@ -196,9 +193,7 @@ class LibraryReadIntegrationTest {
             ).toEntity(),
         )
 
-        val secondRevision = withContext(Dispatchers.Default) {
-            withTimeout(5_000) { secondEmission.await() }
-        }
+        val secondRevision = withTimeout(5_000) { secondEmission.await() }
         collector.join()
 
         // The scalar value is intentionally count-based, but Room must still re-emit it when an
