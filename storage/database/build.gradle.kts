@@ -46,6 +46,7 @@ dependencies {
 
     testImplementation(project(":scheduler:core"))
     testImplementation(project(":collector:api"))
+    testImplementation(project(":pipeline"))
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.androidx.room3.testing)
