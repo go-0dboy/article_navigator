@@ -1,6 +1,7 @@
 package io.github.go0dboy.articlenavigator.storage.database
 
 import androidx.room3.Dao
+import androidx.room3.Insert
 import androidx.room3.Query
 import androidx.room3.Transaction
 import androidx.room3.Upsert
@@ -78,8 +79,30 @@ interface ArticleProcessingDao {
     )
     suspend fun release(id: String, runToken: String): Int
 
-    @Upsert
-    suspend fun upsertRaw(content: RawContentEntity)
+    @Query(
+        """
+        UPDATE raw_contents SET
+            contentType = :contentType,
+            payload = :payload,
+            resolvedUrl = :resolvedUrl,
+            fetchedAtEpochMillis = :fetchedAtEpochMillis,
+            httpStatus = :httpStatus,
+            expiresAtEpochMillis = :expiresAtEpochMillis
+        WHERE discoveredItemId = :id
+        """,
+    )
+    suspend fun updateRaw(
+        id: String,
+        contentType: String?,
+        payload: ByteArray,
+        resolvedUrl: String?,
+        fetchedAtEpochMillis: Long,
+        httpStatus: Int,
+        expiresAtEpochMillis: Long?,
+    ): Int
+
+    @Insert
+    suspend fun insertRaw(content: RawContentEntity)
 
     @Query("SELECT * FROM raw_contents WHERE discoveredItemId = :id LIMIT 1")
     suspend fun raw(id: String): RawContentEntity?
@@ -96,7 +119,16 @@ interface ArticleProcessingDao {
     ): Boolean {
         if (owns(id, runToken, atEpochMillis) != 1) return false
         require(content.discoveredItemId == id)
-        upsertRaw(content)
+        val updated = updateRaw(
+            id = id,
+            contentType = content.contentType,
+            payload = content.payload,
+            resolvedUrl = content.resolvedUrl,
+            fetchedAtEpochMillis = content.fetchedAtEpochMillis,
+            httpStatus = content.httpStatus,
+            expiresAtEpochMillis = content.expiresAtEpochMillis,
+        )
+        if (updated == 0) insertRaw(content)
         return true
     }
 
